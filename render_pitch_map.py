@@ -18,6 +18,25 @@ FONT_MAP = {
 
 SAFE_TOP_OFFSET_PX = 20.0
 
+# Embedded brand colours
+DEFAULT_THEMES = {
+    "warriors": {
+        "pill_bg_hex": "#5C0632",
+        "pill_border_hex": "#FFFFFF",
+        "text_hex": "#FFFFFF",
+    },
+    "hurricanes": {
+        "pill_bg_hex": "#002B49",
+        "pill_border_hex": "#FFFFFF",
+        "text_hex": "#FFFFFF",
+    },
+    "juniors": {
+        "pill_bg_hex": "#1B4D3E",
+        "pill_border_hex": "#FFFFFF",
+        "text_hex": "#FFFFFF",
+    },
+}
+
 
 def hex_to_rgba(hex_str: str, alpha: int = 255) -> tuple:
     hex_str = str(hex_str).lstrip("#")
@@ -81,25 +100,15 @@ def generate_pitch_map(
 ) -> Path:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    anchors_df = pd.read_excel(config_excel_path, sheet_name="pitch_anchors")
-    themes_df = pd.read_excel(config_excel_path, sheet_name="brand_themes")
+    # Read first sheet regardless of tab name
+    anchors_df = pd.read_excel(config_excel_path, sheet_name=0)
 
-    # Match row configuration
     anchor_rows = anchors_df[anchors_df["pitch_key"] == pitch_key]
     if anchor_rows.empty:
-        raise ValueError(
-            f"Pitch key '{pitch_key}' not found in 'pitch_anchors' sheet."
-        )
+        raise ValueError(f"Pitch key '{pitch_key}' not found in Excel file.")
     anchor = anchor_rows.iloc[0].to_dict()
 
-    theme_rows = themes_df[
-        themes_df["stream"].str.lower() == stream.lower().strip()
-    ]
-    if theme_rows.empty:
-        raise ValueError(
-            f"Brand theme stream '{stream}' not found in 'brand_themes' sheet."
-        )
-    theme = theme_rows.iloc[0].to_dict()
+    theme = DEFAULT_THEMES.get(stream.lower().strip(), DEFAULT_THEMES["warriors"])
 
     # Load base image
     base_image_path = MAPS_DIR / str(anchor["base_image"]).strip()
@@ -138,7 +147,6 @@ def generate_pitch_map(
         draw=dummy_draw,
     )
 
-    # Compute bounding boxes for each text line
     metrics = []
     for txt, fnt in lines:
         bb = dummy_draw.textbbox((0, 0), txt, font=fnt)
@@ -151,7 +159,6 @@ def generate_pitch_map(
     badge_w = max_line_w + (pad_x * 2)
     badge_h = total_text_h + (pad_y * 2)
 
-    # Construct badge container
     badge_img = Image.new("RGBA", (int(badge_w), int(badge_h)), (0, 0, 0, 0))
     b_draw = ImageDraw.Draw(badge_img)
 
@@ -169,7 +176,6 @@ def generate_pitch_map(
         b_draw.text((line_x, curr_y), txt, font=fnt, fill=text_color)
         curr_y += line_h + gap
 
-    # Rotate badge if pitch orientation requires it
     if text_angle != 0.0:
         rotated_badge = badge_img.rotate(
             -text_angle, expand=True, resample=Image.Resampling.BICUBIC
@@ -180,7 +186,6 @@ def generate_pitch_map(
     dest_x = int(round(cx - (rotated_badge.width / 2.0)))
     dest_y = int(round(cy - (rotated_badge.height / 2.0)))
 
-    # Composite and save
     base_img.alpha_composite(rotated_badge, dest=(dest_x, dest_y))
     output_filepath = OUTPUT_DIR / output_filename
     base_img.convert("RGB").save(output_filepath, "PNG")
@@ -190,15 +195,14 @@ def generate_pitch_map(
 
 
 if __name__ == "__main__":
-    # Test execution
     config_file = BASE_DIR / "config.xlsx"
 
     generate_pitch_map(
         config_excel_path=config_file,
-        pitch_key="P2_BOTTOM",
+        pitch_key="P2_WHOLE",
         home_team="WARRIORS U16",
         opponent="BASINGSTOKE RFC",
         ko_time="11:15",
-        output_filename="test_p2_bottom.png",
+        output_filename="test_p2_whole.png",
         stream="warriors",
     )
