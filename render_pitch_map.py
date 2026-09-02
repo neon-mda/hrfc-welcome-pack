@@ -93,7 +93,8 @@ def load_opponent_crest(
     ).strip()
 
     search_terms = {raw_name, base_name}
-    candidates = []
+    white_candidates = []
+    standard_candidates = []
 
     for term in search_terms:
         if not term:
@@ -101,7 +102,24 @@ def load_opponent_crest(
         underscored = term.replace(" ", "_")
         hyphenated = term.replace(" ", "-")
 
-        candidates.extend(
+        # Priority 1: White-detailing variants
+        white_candidates.extend(
+            [
+                OPPOSITIONS_DIR / f"{term}_WHITE.png",
+                OPPOSITIONS_DIR / f"{underscored}_WHITE.png",
+                OPPOSITIONS_DIR / f"{hyphenated}_WHITE.png",
+                OPPOSITIONS_DIR / f"{term.upper()}_WHITE.png",
+                OPPOSITIONS_DIR / f"{underscored.upper()}_WHITE.png",
+                OPPOSITIONS_DIR / f"{term}_white.png",
+                OPPOSITIONS_DIR / f"{underscored}_white.png",
+                OPPOSITIONS_DIR / f"{hyphenated}_white.png",
+                OPPOSITIONS_DIR / f"{term}-WHITE.png",
+                OPPOSITIONS_DIR / f"{underscored}-WHITE.png",
+            ]
+        )
+
+        # Priority 2: Standard variants
+        standard_candidates.extend(
             [
                 OPPOSITIONS_DIR / f"{term}.png",
                 OPPOSITIONS_DIR / f"{underscored}.png",
@@ -113,11 +131,13 @@ def load_opponent_crest(
             ]
         )
 
-    for path in candidates:
+    # Check white versions first, then fall back to standard
+    for path in white_candidates + standard_candidates:
         if path.exists():
             img = Image.open(path).convert("RGBA")
             img.thumbnail((max_w_px, max_h_px), Image.Resampling.LANCZOS)
             return img
+
     return None
 
 
@@ -135,7 +155,7 @@ def render_top_right_header(
     right_x = HEADER_RIGHT_MARGIN_X * scale
     curr_y = HEADER_TOP_Y * scale
 
-    # Line 1: Home Team
+    # Line 1: Home Team (e.g. WARRIORS U14)
     line1 = str(home_team).upper()
     bb1 = draw.textbbox((0, 0), line1, font=f_header)
     w1 = bb1[2] - bb1[0]
@@ -219,6 +239,8 @@ def generate_pitch_map(
     cy = canva_cy * scale
 
     text_angle = -float(anchor["text_angle"]) if "text_angle" in anchor and pd.notna(anchor["text_angle"]) else 0.0
+    
+    # Restrict usable text width to 75% of pitch box width to enforce clean multi-line wrapping
     max_w_allowed = raw_w * 0.75 * scale
 
     dummy_draw = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
@@ -277,6 +299,7 @@ def generate_pitch_map(
     dest_y = int(round(cy - (rotated_text.height / 2.0)))
     base_img.alpha_composite(rotated_text, dest=(dest_x, dest_y))
 
+    # Opponent crest in branding area
     max_crest_w = int(round(OPPONENT_BOX_W * scale))
     max_crest_h = int(round(OPPONENT_BOX_H * scale))
     crest_img = load_opponent_crest(opponent, max_crest_w, max_crest_h)
@@ -288,6 +311,7 @@ def generate_pitch_map(
         crest_dest_y = int(round(crest_cy - (crest_img.height / 2.0)))
         base_img.alpha_composite(crest_img, dest=(crest_dest_x, crest_dest_y))
 
+    # Top-right header overlay
     render_top_right_header(
         base_img=base_img,
         home_team=home_team,
@@ -303,6 +327,31 @@ def generate_pitch_map(
     return output_filepath
 
 
+def process_fixtures_batch(fixtures_excel_path: Path, config_excel_path: Path):
+    df = pd.read_excel(fixtures_excel_path)
+    for _, row in df.iterrows():
+        out_name = str(row.get("output_filename", "")).strip()
+        if not out_name or out_name.lower() == "nan":
+            safe_team = re.sub(r"[^A-Za-z0-9]", "_", str(row["home_team"]))
+            safe_pitch = re.sub(r"[^A-Za-z0-9]", "_", str(row["pitch_key"]))
+            out_name = f"pitch_map_{safe_team}_{safe_pitch}.png"
+
+        is_prov = False
+        if "is_provisional" in row and pd.notna(row["is_provisional"]):
+            is_prov = str(row["is_provisional"]).strip().upper() in ["TRUE", "1", "YES"]
+
+        generate_pitch_map(
+            config_excel_path=config_excel_path,
+            pitch_key=str(row["pitch_key"]),
+            home_team=str(row["home_team"]),
+            opponent=str(row["opponent"]),
+            ko_time=str(row["ko_time"]),
+            match_date=str(row["match_date"]),
+            is_provisional=is_prov,
+            output_filename=out_name,
+        )
+
+
 if __name__ == "__main__":
     config_file = BASE_DIR / "config.xlsx"
 
@@ -310,7 +359,7 @@ if __name__ == "__main__":
         config_excel_path=config_file,
         pitch_key="P1_WHOLE",
         home_team="WARRIORS U14",
-        opponent="CHINNOR RFC",
+        opponent="RWB",
         ko_time="13:00",
         match_date="19.04.26",
         is_provisional=True,
