@@ -1,6 +1,6 @@
 from pathlib import Path
+import datetime
 import io
-import re
 import zipfile
 import pandas as pd
 import streamlit as st
@@ -22,6 +22,24 @@ st.set_page_config(
 
 st.title("🏉 HRFC Match-Day Pitch Map Generator")
 
+TEAM_OPTIONS = [
+    "U13",
+    "U14",
+    "HURRICANES",
+    "COLTS",
+    "WARRIORS U12",
+    "WARRIORS U14",
+    "WARRIORS U16",
+    "U12",
+    "U11",
+    "U10",
+    "U9",
+    "U8",
+    "U7",
+    "U6",
+    "OTHER (CUSTOM...)",
+]
+
 COMPETITION_LABELS = {
     "None": "None",
     "HOB": "HOB",
@@ -33,12 +51,38 @@ COMPETITION_LABELS = {
 }
 
 
+def get_next_sunday(today: datetime.date | None = None) -> datetime.date:
+    current = today or datetime.date.today()
+    # Monday is 0 and Sunday is 6
+    days_until_sunday = (6 - current.weekday()) % 7
+    if days_until_sunday == 0:
+        days_until_sunday = 7
+    return current + datetime.timedelta(days=days_until_sunday)
+
+
 @st.cache_data
 def load_config_keys():
     if not CONFIG_PATH.exists():
         return []
     df = pd.read_excel(CONFIG_PATH, sheet_name=0)
     return df["pitch_key"].dropna().astype(str).tolist()
+
+
+@st.cache_data
+def load_opponents_data():
+    if not CONFIG_PATH.exists():
+        return {}
+    try:
+        df = pd.read_excel(CONFIG_PATH, sheet_name="opponents")
+        opp_dict = {}
+        for _, row in df.iterrows():
+            d_name = str(row["display_name"]).strip()
+            alias = str(row["alias"]).strip() if pd.notna(row.get("alias")) else d_name
+            stem = str(row["crest_asset_stem"]).strip() if pd.notna(row.get("crest_asset_stem")) else d_name
+            opp_dict[d_name.upper()] = {"alias": alias, "crest_stem": stem, "original_display": d_name}
+        return opp_dict
+    except Exception:
+        return {}
 
 
 @st.cache_data
@@ -50,30 +94,22 @@ def load_available_logos():
 
 
 def get_competitions_for_team(team_name: str, available_logos: set[str]) -> list[str]:
-    raw = str(team_name).upper()
+    clean_team = str(team_name).strip().upper()
 
-    # Warriors rules
-    if "WARRIORS" in raw:
-        if "U12" in raw:
-            allowed = ["PUP"]
-        elif "U14" in raw:
-            allowed = ["BKO", "HOB", "PUP"]
-        elif "U16" in raw:
-            allowed = ["HOB", "U16GIRLSNATCUP"]
-        else:
-            allowed = ["BKO", "HOB", "PUP", "U16GIRLSNATCUP"]
-
-    # Hurricanes & Colts rules
-    elif "HURRICANES" in raw or "COLTS" in raw:
+    if clean_team == "WARRIORS U12":
+        allowed = ["PUP"]
+    elif clean_team == "WARRIORS U14":
+        allowed = ["BKO", "HOB", "PUP"]
+    elif clean_team == "WARRIORS U16":
+        allowed = ["HOB", "U16GIRLSNATCUP"]
+    elif clean_team in ["HURRICANES", "COLTS"]:
         allowed = ["OBB"]
-
-    # Junior Boys rules
-    elif any(tag in raw for tag in ["U13", "U14"]):
+    elif clean_team in ["U13", "U14"]:
         allowed = ["BKO", "BYC"]
-
-    # Other age grades / fallback
+    elif "WARRIORS" in clean_team:
+        allowed = ["BKO", "HOB", "PUP", "U16GIRLSNATCUP"]
     else:
-        allowed = sorted(list(available_logos))
+        allowed = []
 
     valid_codes = [c for c in allowed if c in available_logos]
     return ["None"] + valid_codes
@@ -81,6 +117,7 @@ def get_competitions_for_team(team_name: str, available_logos: set[str]) -> list
 
 pitch_keys = load_config_keys()
 available_logos = load_available_logos()
+opponents_data = load_opponents_data()
 
 tab_single, tab_batch = st.tabs(["Single Fixture", "Batch Processing"])
 
@@ -95,16 +132,47 @@ with tab_single:
 
         pitch_choice = st.selectbox("Select Pitch Allocation", options=pitch_keys)
 
-        home_team = st.text_input("Home Team", value="WARRIORS U16")
-        opponent = st.text_input("Opponent Name", value="Tadley RFC")
+        selected_team = st.selectbox(
+            "Home Team",
+            options=TEAM_OPTIONS,
+            index=5,  # WARRIORS U14
+        )
+
+        if selected_team == "OTHER (CUSTOM...)":
+            home_team = st.text_input("Enter Custom Team Name", value="")
+        else:
+            home_team = selected_team
+
+        opp_options = sorted(list(opponents_data.keys())) + ["OTHER (CUSTOM...)"]
+        selected_opp = st.selectbox("Opponent", options=opp_options, index=0 if opp_options else 0)
+
+        if selected_opp == "OTHER (CUSTOM...)":
+            opponent_display = st.text_input("Enter Custom Opponent Name", value="").strip().upper()
+            opponent_alias = opponent_display
+            opponent_crest_stem = opponent_display
+        else:
+            opponent_display = selected_opp
+            opponent_alias = opponents_data[selected_opp]["alias"]
+            opponent_crest_stem = opponents_data[selected_opp]["crest_stem"]
 
         c_time, c_date = st.columns(2)
         with c_time:
-            ko_time = st.text_input("Kick-Off Time", value="10:00")
-        with c_date:
-            match_date = st.text_input("Match Date", value="19.04.26")
+            picked_time = st.time_input(
+                "Kick-Off Time",
+                value=datetime.time(10, 0),
+                step=datetime.timedelta(minutes=15),
+            )
+            ko_time = picked_time.strftime("%H:%M")
 
-        # Dynamic competition options linked to the home team
+        with c_date:
+            next_sunday = get_next_sunday()
+            picked_date = st.date_input(
+                "Match Date",
+                value=next_sunday,
+                format="DD/MM/YYYY",
+            )
+            match_date = picked_date.strftime("%d.%m.%y")
+
         comp_codes = get_competitions_for_team(home_team, available_logos)
         selected_code = st.selectbox(
             "Competition",
@@ -132,8 +200,10 @@ with tab_single:
                         config_excel_path=CONFIG_PATH,
                         pitch_key=pitch_choice,
                         home_team=home_team,
-                        opponent=opponent,
+                        opponent=opponent_display,
                         ko_time=ko_time,
+                        opponent_alias=opponent_alias,
+                        opponent_crest_stem=opponent_crest_stem,
                         match_date=match_date,
                         is_provisional=is_provisional,
                         competition=comp_arg,
@@ -200,12 +270,19 @@ with tab_batch:
 
                         comp = str(row["competition"]).strip() if "competition" in row and pd.notna(row["competition"]) else None
 
+                        opp_raw = str(row["opponent"]).strip().upper()
+                        meta = opponents_data.get(opp_raw, {})
+                        opp_alias = meta.get("alias", opp_raw)
+                        opp_stem = meta.get("crest_stem", opp_raw)
+
                         out_file_path = generate_pitch_map(
                             config_excel_path=CONFIG_PATH,
                             pitch_key=str(row["pitch_key"]),
                             home_team=str(row["home_team"]),
-                            opponent=str(row["opponent"]),
+                            opponent=opp_raw,
                             ko_time=str(row["ko_time"]),
+                            opponent_alias=opp_alias,
+                            opponent_crest_stem=opp_stem,
                             match_date=str(row["match_date"]),
                             is_provisional=is_prov,
                             competition=comp,

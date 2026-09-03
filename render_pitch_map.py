@@ -1,10 +1,10 @@
 from pathlib import Path
+from functools import lru_cache
 import math
 import re
 import pandas as pd
 from PIL import Image, ImageDraw, ImageFont
 
-# Base directory paths
 BASE_DIR = Path(__file__).resolve().parent
 ASSETS_DIR = BASE_DIR / "assets"
 FONTS_DIR = ASSETS_DIR / "fonts"
@@ -15,21 +15,18 @@ OUTPUT_DIR = BASE_DIR / "output"
 
 CANVA_DESIGN_WIDTH = 790.0
 
-# Opposition crest bounding box and centre in Canva space
 OPPONENT_BOX_W = 171.5
 OPPONENT_BOX_H = 192.0
-OPPONENT_CREST_CX = 610.5 + (OPPONENT_BOX_W / 2.0)  # 696.25
-OPPONENT_CREST_CY = 883.5 + (OPPONENT_BOX_H / 2.0)  # 979.5
+OPPONENT_CREST_CX = 610.5 + (OPPONENT_BOX_W / 2.0)
+OPPONENT_CREST_CY = 883.5 + (OPPONENT_BOX_H / 2.0)
 
-# Competition logo centred above opposition crest, matched to crest bounding box
-COMP_LOGO_CX = OPPONENT_CREST_CX  # 696.25
+COMP_LOGO_CX = OPPONENT_CREST_CX
 COMP_LOGO_CY = 660.0
 
-# Top-right header anchor coordinates (Canva space)
 HEADER_RIGHT_MARGIN_X = 765.0
 HEADER_TOP_Y = 22.0
-HEADER_FONT_SIZE = 33.2 * 1.15  # 38.18pt
-PROVISIONAL_FONT_SIZE = 11.5 * 1.15  # 13.23pt
+HEADER_FONT_SIZE = 33.2 * 1.15
+PROVISIONAL_FONT_SIZE = 11.5 * 1.15
 
 FONT_MAP = {
     "bold": FONTS_DIR / "Poppins-Bold.ttf",
@@ -37,8 +34,85 @@ FONT_MAP = {
     "regular": FONTS_DIR / "Poppins-Regular.ttf",
 }
 
-TEXT_COLOR_WHITE = (255, 255, 255, 255)
-TEXT_COLOR_GOLD = (223, 177, 53, 255)
+
+def hex_to_rgba(hex_code: str, alpha: int = 255) -> tuple[int, int, int, int]:
+    clean = str(hex_code).lstrip("#").strip()
+    if len(clean) == 6:
+        try:
+            r, g, b = tuple(int(clean[i : i + 2], 16) for i in (0, 2, 4))
+            return (r, g, b, alpha)
+        except ValueError:
+            pass
+    return (255, 255, 255, alpha)
+
+
+@lru_cache(maxsize=4)
+def _load_cached_excel_sheets(config_excel_path_str: str, mtime: float):
+    path = Path(config_excel_path_str)
+    anchors_df = pd.read_excel(path, sheet_name=0)
+    anchors_df["clean_key"] = (
+        anchors_df["pitch_key"].astype(str).str.upper().str.replace(r"[^A-Z0-9]", "", regex=True)
+    )
+    try:
+        teams_df = pd.read_excel(path, sheet_name="teams")
+    except Exception:
+        teams_df = pd.DataFrame()
+
+    return anchors_df, teams_df
+
+
+def get_cached_config_dfs(config_excel_path: Path):
+    mtime = config_excel_path.stat().st_mtime if config_excel_path.exists() else 0.0
+    return _load_cached_excel_sheets(str(config_excel_path.resolve()), mtime)
+
+
+def get_team_palette(
+    teams_df: pd.DataFrame, home_team: str
+) -> tuple[tuple[int, int, int, int], tuple[int, int, int, int]]:
+    default_primary = (255, 255, 255, 255)
+    default_accent = (223, 177, 53, 255)
+
+    if teams_df.empty:
+        return default_primary, default_accent
+
+    try:
+        clean_home = str(home_team).strip().upper()
+        matched_rows = teams_df[
+            teams_df["team_prefix"]
+            .astype(str)
+            .str.upper()
+            .apply(lambda prefix: clean_home.startswith(prefix.strip()))
+        ]
+
+        if not matched_rows.empty:
+            row = matched_rows.iloc[0]
+            primary = hex_to_rgba(row.get("text_primary", "#FFFFFF"))
+            accent = hex_to_rgba(row.get("text_accent", "#DFB135"))
+            return primary, accent
+
+        default_rows = teams_df[teams_df["team_prefix"].astype(str).str.upper() == "DEFAULT"]
+        if not default_rows.empty:
+            row = default_rows.iloc[0]
+            primary = hex_to_rgba(row.get("text_primary", "#FFFFFF"))
+            accent = hex_to_rgba(row.get("text_accent", "#DFB135"))
+            return primary, accent
+
+    except Exception:
+        pass
+
+    return default_primary, default_accent
+
+
+@lru_cache(maxsize=16)
+def get_cached_base_image(image_path_str: str) -> Image.Image:
+    return Image.open(image_path_str).convert("RGBA")
+
+
+@lru_cache(maxsize=64)
+def get_font(style: str, size_pt: int) -> ImageFont.FreeTypeFont:
+    clean_style = str(style).lower().strip()
+    font_path = FONT_MAP.get(clean_style, FONT_MAP["regular"])
+    return ImageFont.truetype(str(font_path), size_pt)
 
 
 def get_canva_element_center(
@@ -50,12 +124,6 @@ def get_canva_element_center(
     half_aabb_w = (w * cos_t + h * sin_t) / 2.0
     half_aabb_h = (w * sin_t + h * cos_t) / 2.0
     return x + half_aabb_w, y + half_aabb_h
-
-
-def get_font(style: str, size: float, scale: float = 1.0) -> ImageFont.FreeTypeFont:
-    clean_style = str(style).lower().strip()
-    font_path = FONT_MAP.get(clean_style, FONT_MAP["regular"])
-    return ImageFont.truetype(str(font_path), int(round(float(size) * scale)))
 
 
 def wrap_text_to_width(
@@ -86,9 +154,8 @@ def wrap_text_to_width(
     return lines
 
 
-def load_competition_logo(
-    comp_code: str | None, max_w_px: int, max_h_px: int
-) -> Image.Image | None:
+@lru_cache(maxsize=32)
+def load_competition_logo(comp_code: str | None, max_w_px: int, max_h_px: int) -> Image.Image | None:
     if not comp_code or pd.isna(comp_code):
         return None
 
@@ -96,24 +163,19 @@ def load_competition_logo(
     if not clean_code or clean_code.upper() in ["NONE", "FRIENDLY", "NAN"]:
         return None
 
-    extensions = [".png", ".PNG", ".jpg", ".JPG", ".jpeg", ".JPEG"]
-    search_keys = [clean_code, clean_code.upper(), clean_code.lower()]
-
-    for key in search_keys:
-        for ext in extensions:
-            candidate = COMP_LOGOS_DIR / f"{key}{ext}"
-            if candidate.exists():
-                img = Image.open(candidate).convert("RGBA")
-                img.thumbnail((max_w_px, max_h_px), Image.Resampling.LANCZOS)
-                return img
+    for ext in [".png", ".PNG", ".jpg", ".JPG", ".jpeg", ".JPEG"]:
+        candidate = COMP_LOGOS_DIR / f"{clean_code}{ext}"
+        if candidate.exists():
+            img = Image.open(candidate).convert("RGBA")
+            img.thumbnail((max_w_px, max_h_px), Image.Resampling.LANCZOS)
+            return img
 
     return None
 
 
-def load_opponent_crest(
-    opponent_name: str, max_w_px: int, max_h_px: int
-) -> Image.Image | None:
-    raw_name = opponent_name.strip()
+@lru_cache(maxsize=64)
+def load_opponent_crest(crest_stem: str, max_w_px: int, max_h_px: int) -> Image.Image | None:
+    raw_name = crest_stem.strip()
     base_name = re.sub(
         r"\b(RFC|RUFC|WRFC|U\d+|WARRIORS|HURRICANES|BOYS|GIRLS)\b",
         "",
@@ -138,14 +200,8 @@ def load_opponent_crest(
                 OPPOSITIONS_DIR / f"{hyphenated}_WHITE.png",
                 OPPOSITIONS_DIR / f"{term.upper()}_WHITE.png",
                 OPPOSITIONS_DIR / f"{underscored.upper()}_WHITE.png",
-                OPPOSITIONS_DIR / f"{term}_white.png",
-                OPPOSITIONS_DIR / f"{underscored}_white.png",
-                OPPOSITIONS_DIR / f"{hyphenated}_white.png",
-                OPPOSITIONS_DIR / f"{term}-WHITE.png",
-                OPPOSITIONS_DIR / f"{underscored}-WHITE.png",
             ]
         )
-
         standard_candidates.extend(
             [
                 OPPOSITIONS_DIR / f"{term}.png",
@@ -172,11 +228,13 @@ def render_top_right_header(
     home_team: str,
     match_date: str,
     scale: float,
+    color_primary: tuple[int, int, int, int],
+    color_accent: tuple[int, int, int, int],
     is_provisional: bool = False,
 ):
     draw = ImageDraw.Draw(base_img)
-    f_header = get_font("bold", HEADER_FONT_SIZE, scale)
-    f_prov = get_font("bold", PROVISIONAL_FONT_SIZE, scale)
+    f_header = get_font("bold", int(round(HEADER_FONT_SIZE * scale)))
+    f_prov = get_font("bold", int(round(PROVISIONAL_FONT_SIZE * scale)))
 
     right_x = HEADER_RIGHT_MARGIN_X * scale
     curr_y = HEADER_TOP_Y * scale
@@ -185,28 +243,31 @@ def render_top_right_header(
     bb1 = draw.textbbox((0, 0), line1, font=f_header)
     w1 = bb1[2] - bb1[0]
     h1 = bb1[3] - bb1[1]
-    draw.text((right_x - w1 - bb1[0], curr_y - bb1[1]), line1, font=f_header, fill=TEXT_COLOR_WHITE)
+    draw.text((right_x - w1 - bb1[0], curr_y - bb1[1]), line1, font=f_header, fill=color_primary)
     curr_y += h1 + int(4.0 * scale)
 
     line2 = "HRFC PITCHES"
     bb2 = draw.textbbox((0, 0), line2, font=f_header)
     w2 = bb2[2] - bb2[0]
     h2 = bb2[3] - bb2[1]
-    draw.text((right_x - w2 - bb2[0], curr_y - bb2[1]), line2, font=f_header, fill=TEXT_COLOR_WHITE)
+    draw.text((right_x - w2 - bb2[0], curr_y - bb2[1]), line2, font=f_header, fill=color_primary)
     curr_y += h2 + int(4.0 * scale)
 
+    line_prov = "PROVISIONAL"
+    bb_p = draw.textbbox((0, 0), line_prov, font=f_prov)
+    wp = bb_p[2] - bb_p[0]
+    hp = bb_p[3] - bb_p[1]
+
     if is_provisional:
-        line_prov = "PROVISIONAL"
-        bb_p = draw.textbbox((0, 0), line_prov, font=f_prov)
-        wp = bb_p[2] - bb_p[0]
-        hp = bb_p[3] - bb_p[1]
-        draw.text((right_x - wp - bb_p[0], curr_y - bb_p[1]), line_prov, font=f_prov, fill=TEXT_COLOR_GOLD)
-        curr_y += hp + int(2.0 * scale)
+        draw.text((right_x - wp - bb_p[0], curr_y - bb_p[1]), line_prov, font=f_prov, fill=color_accent)
+
+    # Locked vertical spacing for the date
+    curr_y += hp + int(2.0 * scale)
 
     line3 = str(match_date).strip()
     bb3 = draw.textbbox((0, 0), line3, font=f_header)
     w3 = bb3[2] - bb3[0]
-    draw.text((right_x - w3 - bb3[0], curr_y - bb3[1]), line3, font=f_header, fill=TEXT_COLOR_GOLD)
+    draw.text((right_x - w3 - bb3[0], curr_y - bb3[1]), line3, font=f_header, fill=color_accent)
 
 
 def generate_pitch_map(
@@ -215,6 +276,8 @@ def generate_pitch_map(
     home_team: str,
     opponent: str,
     ko_time: str,
+    opponent_alias: str | None = None,
+    opponent_crest_stem: str | None = None,
     match_date: str = "19.04.26",
     is_provisional: bool = False,
     competition: str | None = None,
@@ -222,13 +285,9 @@ def generate_pitch_map(
 ) -> Path:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    anchors_df = pd.read_excel(config_excel_path, sheet_name=0)
+    anchors_df, teams_df = get_cached_config_dfs(config_excel_path)
 
     target_clean = re.sub(r"[^A-Z0-9]", "", str(pitch_key).upper())
-    anchors_df["clean_key"] = (
-        anchors_df["pitch_key"].astype(str).str.upper().str.replace(r"[^A-Z0-9]", "", regex=True)
-    )
-
     match = anchors_df[
         (anchors_df["clean_key"] == target_clean)
         | (anchors_df["clean_key"] == f"P{target_clean}")
@@ -239,16 +298,14 @@ def generate_pitch_map(
 
     if match.empty:
         available_keys = anchors_df["pitch_key"].dropna().tolist()
-        raise ValueError(
-            f"Pitch key '{pitch_key}' not found. Available keys in sheet: {available_keys}"
-        )
+        raise ValueError(f"Pitch key '{pitch_key}' not found. Available keys: {available_keys}")
     anchor = match.iloc[0].to_dict()
 
     base_image_path = MAPS_DIR / str(anchor["base_image"]).strip()
     if not base_image_path.exists():
         raise FileNotFoundError(f"Base map image not found: {base_image_path}")
-    base_img = Image.open(base_image_path).convert("RGBA")
 
+    base_img = get_cached_base_image(str(base_image_path.resolve())).copy()
     scale = base_img.width / CANVA_DESIGN_WIDTH
 
     raw_x = float(anchor["x"])
@@ -258,69 +315,130 @@ def generate_pitch_map(
     angle = float(anchor["angle"]) if "angle" in anchor and pd.notna(anchor["angle"]) else 0.0
 
     canva_cx, canva_cy = get_canva_element_center(raw_x, raw_y, raw_w, raw_h, angle)
+
+    raw_text_angle = str(anchor.get("text_angle", 0.0)).replace(" ", "").replace("--", "-")
+    parsed_angle = float(raw_text_angle) if raw_text_angle not in ["nan", ""] else 0.0
+    text_angle = -parsed_angle
+
+    clean_p = str(pitch_key).upper()
     cx = canva_cx * scale
     cy = canva_cy * scale
 
-    text_angle = -float(anchor["text_angle"]) if "text_angle" in anchor and pd.notna(anchor["text_angle"]) else 0.0
-    max_w_allowed = raw_w * 0.75 * scale
+    if "P2_TOP" in clean_p or "P2A" in clean_p:
+        rad = math.radians(text_angle)
+        offset_dist = 25.0
+        cx += offset_dist * math.sin(rad)
+        cy += offset_dist * math.cos(rad)
+    elif any(f"5{ch}" in clean_p for ch in ["A", "B", "C", "D", "E"]):
+        cy += 12.0 * scale
+
+    is_vertical_text = abs(abs(text_angle) - 90.0) < 15.0
+    available_line_len = raw_h if is_vertical_text else raw_w
+
+    # Tighten wrap threshold on Pitch 2 (Whole and Halves) to prevent border incursions
+    if "P2" in clean_p or "PITCH2" in clean_p:
+        width_ratio = 0.65
+    else:
+        width_ratio = 0.82
+
+    max_w_allowed = available_line_len * width_ratio * scale
 
     dummy_draw = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
+    color_primary, color_accent = get_team_palette(teams_df, home_team)
 
-    f_l1 = get_font(anchor["l1_style"] if "l1_style" in anchor else "bold", anchor["l1_size"], scale)
-    f_l2 = get_font(anchor["l2_style"] if "l2_style" in anchor else "regular", anchor["l2_size"], scale)
-    f_l3 = get_font(anchor["l3_style"] if "l3_style" in anchor else "semibold", anchor["l3_size"], scale)
-    f_l4 = get_font(anchor["l4_style"] if "l4_style" in anchor else "regular", anchor["l4_size"], scale)
+    s_l1 = anchor.get("l1_style", "bold")
+    s_l2 = anchor.get("l2_style", "regular")
+    s_l3 = anchor.get("l3_style", "semibold")
+    s_l4 = anchor.get("l4_style", "regular")
+
+    p_l1 = float(anchor["l1_size"])
+    p_l2 = float(anchor["l2_size"])
+    p_l3 = float(anchor["l3_size"])
+    p_l4 = float(anchor["l4_size"])
+
+    f_l1 = get_font(s_l1, int(round(p_l1 * scale)))
+    f_l2 = get_font(s_l2, int(round(p_l2 * scale)))
+    f_l3 = get_font(s_l3, int(round(p_l3 * scale)))
+    f_l4 = get_font(s_l4, int(round(p_l4 * scale)))
 
     home_lines = wrap_text_to_width(str(home_team).upper(), f_l1, max_w_allowed, dummy_draw)
-    opp_lines = wrap_text_to_width(str(opponent).upper(), f_l3, max_w_allowed, dummy_draw)
     ko_lines = wrap_text_to_width(f"KO {ko_time}", f_l4, max_w_allowed, dummy_draw)
 
-    text_items = []
-    for hl in home_lines:
-        text_items.append((hl, f_l1, float(anchor["l1_size"])))
-    text_items.append(("v", f_l2, float(anchor["l2_size"])))
-    for ol in opp_lines:
-        text_items.append((ol, f_l3, float(anchor["l3_size"])))
-    for kl in ko_lines:
-        text_items.append((kl, f_l4, float(anchor["l4_size"])))
+    is_pitch_5 = any(p in clean_p for p in ["5A", "5B", "5C", "5D", "5E"])
+
+    primary_opp_lines = wrap_text_to_width(str(opponent).upper(), f_l3, max_w_allowed, dummy_draw)
+    if is_pitch_5 and len(primary_opp_lines) > 1 and opponent_alias:
+        opp_lines = wrap_text_to_width(str(opponent_alias).upper(), f_l3, max_w_allowed, dummy_draw)
+    else:
+        opp_lines = primary_opp_lines
+
+    sections = [
+        ("home", home_lines, s_l1, p_l1),
+        ("versus", ["v"], s_l2, p_l2),
+        ("opp", opp_lines, s_l3, p_l3),
+        ("ko", ko_lines, s_l4, p_l4),
+    ]
+
+    total_raw_lines = sum(len(lines) for _, lines, _, _ in sections)
+    stack_scale = 0.85 if total_raw_lines >= 5 else 1.0
 
     metrics = []
-    for txt, fnt, pt_size in text_items:
-        ascent, descent = fnt.getmetrics()
-        line_height = ascent + descent
-        bbox = dummy_draw.textbbox((0, 0), txt, font=fnt)
-        text_width = bbox[2] - bbox[0]
-        gap_px = int(round(pt_size * scale * 0.18))
-        metrics.append((txt, fnt, text_width, line_height, gap_px, bbox[0], bbox[1]))
+    for s_idx, (sec_name, lines, style_name, base_pt) in enumerate(sections):
+        fnt = get_font(style_name, int(round(base_pt * stack_scale * scale)))
+        for l_idx, line in enumerate(lines):
+            bbox = dummy_draw.textbbox((0, 0), line, font=fnt)
+            line_w = bbox[2] - bbox[0]
+            line_h = bbox[3] - bbox[1]
+
+            is_last_in_sec = (l_idx == len(lines) - 1)
+            is_last_overall = (s_idx == len(sections) - 1 and is_last_in_sec)
+
+            if is_last_overall:
+                gap_px = 0
+            elif not is_last_in_sec:
+                gap_px = int(round(1.5 * scale))
+            else:
+                if sec_name == "home":
+                    gap_px = int(round(5.0 * scale))
+                elif sec_name == "versus":
+                    gap_px = int(round(5.0 * scale))
+                elif sec_name == "opp":
+                    gap_px = int(round(7.0 * scale))
+                else:
+                    gap_px = int(round(4.0 * scale))
+
+            metrics.append((line, fnt, line_w, line_h, gap_px, bbox[0], bbox[1]))
 
     total_text_h = sum(m[3] + m[4] for m in metrics)
     max_line_w = max(m[2] for m in metrics)
 
-    text_overlay = Image.new(
-        "RGBA",
-        (int(max_line_w + 30 * scale), int(total_text_h + 30 * scale)),
-        (0, 0, 0, 0),
-    )
+    overlay_w = int(max_line_w + 40 * scale)
+    overlay_h = int(total_text_h + 40 * scale)
+    text_overlay = Image.new("RGBA", (overlay_w, overlay_h), (0, 0, 0, 0))
     t_draw = ImageDraw.Draw(text_overlay)
 
-    curr_y = int(15 * scale)
+    curr_y = int(20 * scale)
     for txt, fnt, line_w, line_h, gap_px, left_offset, top_offset in metrics:
-        line_x = (text_overlay.width - line_w) // 2
-        t_draw.text((line_x - left_offset, curr_y - top_offset), txt, font=fnt, fill=TEXT_COLOR_WHITE)
+        line_x = (overlay_w - line_w) // 2
+        t_draw.text(
+            (line_x - left_offset, curr_y - top_offset),
+            txt,
+            font=fnt,
+            fill=color_primary,
+        )
         curr_y += line_h + gap_px
 
     if text_angle != 0.0:
-        rotated_text = text_overlay.rotate(
+        rotated_overlay = text_overlay.rotate(
             text_angle, expand=True, resample=Image.Resampling.BICUBIC
         )
     else:
-        rotated_text = text_overlay
+        rotated_overlay = text_overlay
 
-    dest_x = int(round(cx - (rotated_text.width / 2.0)))
-    dest_y = int(round(cy - (rotated_text.height / 2.0)))
-    base_img.alpha_composite(rotated_text, dest=(dest_x, dest_y))
+    dest_x = int(round(cx - (rotated_overlay.width / 2.0)))
+    dest_y = int(round(cy - (rotated_overlay.height / 2.0)))
+    base_img.alpha_composite(rotated_overlay, dest=(dest_x, dest_y))
 
-    # Opponent and competition logo sizing
     max_crest_w = int(round(OPPONENT_BOX_W * scale))
     max_crest_h = int(round(OPPONENT_BOX_H * scale))
 
@@ -333,7 +451,8 @@ def generate_pitch_map(
             comp_dest_y = int(round(comp_cy - (comp_img.height / 2.0)))
             base_img.alpha_composite(comp_img, dest=(comp_dest_x, comp_dest_y))
 
-    crest_img = load_opponent_crest(opponent, max_crest_w, max_crest_h)
+    lookup_crest_name = opponent_crest_stem if opponent_crest_stem else opponent
+    crest_img = load_opponent_crest(lookup_crest_name, max_crest_w, max_crest_h)
     if crest_img:
         crest_cx = OPPONENT_CREST_CX * scale
         crest_cy = OPPONENT_CREST_CY * scale
@@ -346,13 +465,14 @@ def generate_pitch_map(
         home_team=home_team,
         match_date=match_date,
         scale=scale,
+        color_primary=color_primary,
+        color_accent=color_accent,
         is_provisional=is_provisional,
     )
 
     output_filepath = OUTPUT_DIR / output_filename
     base_img.convert("RGB").save(output_filepath, "PNG")
 
-    print(f"Generated: {output_filepath}")
     return output_filepath
 
 
@@ -382,3 +502,18 @@ def process_fixtures_batch(fixtures_excel_path: Path, config_excel_path: Path):
             competition=comp,
             output_filename=out_name,
         )
+
+
+if __name__ == "__main__":
+    config_file = BASE_DIR / "config.xlsx"
+
+    generate_pitch_map(
+        config_excel_path=config_file,
+        pitch_key="P2_WHOLE",
+        home_team="WARRIORS U14",
+        opponent="BRACKNELL RFC",
+        ko_time="10:00",
+        match_date="06.09.26",
+        is_provisional=True,
+        output_filename="test_p2_whole_wrap.png",
+    )
