@@ -10,6 +10,7 @@ ASSETS_DIR = BASE_DIR / "assets"
 FONTS_DIR = ASSETS_DIR / "fonts"
 MAPS_DIR = ASSETS_DIR / "maps"
 OPPOSITIONS_DIR = ASSETS_DIR / "oppositions"
+COMP_LOGOS_DIR = ASSETS_DIR / "comp_logos"
 OUTPUT_DIR = BASE_DIR / "output"
 
 CANVA_DESIGN_WIDTH = 790.0
@@ -20,11 +21,15 @@ OPPONENT_BOX_H = 192.0
 OPPONENT_CREST_CX = 610.5 + (OPPONENT_BOX_W / 2.0)  # 696.25
 OPPONENT_CREST_CY = 883.5 + (OPPONENT_BOX_H / 2.0)  # 979.5
 
-# Top-right header anchor coordinates (Canva design space)
+# Competition logo centred above opposition crest, matched to crest bounding box
+COMP_LOGO_CX = OPPONENT_CREST_CX  # 696.25
+COMP_LOGO_CY = 660.0
+
+# Top-right header anchor coordinates (Canva space)
 HEADER_RIGHT_MARGIN_X = 765.0
 HEADER_TOP_Y = 22.0
-HEADER_FONT_SIZE = 33.2 * 1.15  # Scaled by 115% (~38.18pt)
-PROVISIONAL_FONT_SIZE = 11.5 * 1.15  # Scaled by 115% (~13.23pt)
+HEADER_FONT_SIZE = 33.2 * 1.15  # 38.18pt
+PROVISIONAL_FONT_SIZE = 11.5 * 1.15  # 13.23pt
 
 FONT_MAP = {
     "bold": FONTS_DIR / "Poppins-Bold.ttf",
@@ -81,6 +86,30 @@ def wrap_text_to_width(
     return lines
 
 
+def load_competition_logo(
+    comp_code: str | None, max_w_px: int, max_h_px: int
+) -> Image.Image | None:
+    if not comp_code or pd.isna(comp_code):
+        return None
+
+    clean_code = str(comp_code).strip()
+    if not clean_code or clean_code.upper() in ["NONE", "FRIENDLY", "NAN"]:
+        return None
+
+    extensions = [".png", ".PNG", ".jpg", ".JPG", ".jpeg", ".JPEG"]
+    search_keys = [clean_code, clean_code.upper(), clean_code.lower()]
+
+    for key in search_keys:
+        for ext in extensions:
+            candidate = COMP_LOGOS_DIR / f"{key}{ext}"
+            if candidate.exists():
+                img = Image.open(candidate).convert("RGBA")
+                img.thumbnail((max_w_px, max_h_px), Image.Resampling.LANCZOS)
+                return img
+
+    return None
+
+
 def load_opponent_crest(
     opponent_name: str, max_w_px: int, max_h_px: int
 ) -> Image.Image | None:
@@ -102,7 +131,6 @@ def load_opponent_crest(
         underscored = term.replace(" ", "_")
         hyphenated = term.replace(" ", "-")
 
-        # Priority 1: White-detailing variants
         white_candidates.extend(
             [
                 OPPOSITIONS_DIR / f"{term}_WHITE.png",
@@ -118,7 +146,6 @@ def load_opponent_crest(
             ]
         )
 
-        # Priority 2: Standard variants
         standard_candidates.extend(
             [
                 OPPOSITIONS_DIR / f"{term}.png",
@@ -131,7 +158,6 @@ def load_opponent_crest(
             ]
         )
 
-    # Check white versions first, then fall back to standard
     for path in white_candidates + standard_candidates:
         if path.exists():
             img = Image.open(path).convert("RGBA")
@@ -155,7 +181,6 @@ def render_top_right_header(
     right_x = HEADER_RIGHT_MARGIN_X * scale
     curr_y = HEADER_TOP_Y * scale
 
-    # Line 1: Home Team (e.g. WARRIORS U14)
     line1 = str(home_team).upper()
     bb1 = draw.textbbox((0, 0), line1, font=f_header)
     w1 = bb1[2] - bb1[0]
@@ -163,7 +188,6 @@ def render_top_right_header(
     draw.text((right_x - w1 - bb1[0], curr_y - bb1[1]), line1, font=f_header, fill=TEXT_COLOR_WHITE)
     curr_y += h1 + int(4.0 * scale)
 
-    # Line 2: HRFC PITCHES
     line2 = "HRFC PITCHES"
     bb2 = draw.textbbox((0, 0), line2, font=f_header)
     w2 = bb2[2] - bb2[0]
@@ -171,7 +195,6 @@ def render_top_right_header(
     draw.text((right_x - w2 - bb2[0], curr_y - bb2[1]), line2, font=f_header, fill=TEXT_COLOR_WHITE)
     curr_y += h2 + int(4.0 * scale)
 
-    # Optional "PROVISIONAL" sub-tag
     if is_provisional:
         line_prov = "PROVISIONAL"
         bb_p = draw.textbbox((0, 0), line_prov, font=f_prov)
@@ -180,7 +203,6 @@ def render_top_right_header(
         draw.text((right_x - wp - bb_p[0], curr_y - bb_p[1]), line_prov, font=f_prov, fill=TEXT_COLOR_GOLD)
         curr_y += hp + int(2.0 * scale)
 
-    # Line 3: Match Date
     line3 = str(match_date).strip()
     bb3 = draw.textbbox((0, 0), line3, font=f_header)
     w3 = bb3[2] - bb3[0]
@@ -195,6 +217,7 @@ def generate_pitch_map(
     ko_time: str,
     match_date: str = "19.04.26",
     is_provisional: bool = False,
+    competition: str | None = None,
     output_filename: str = "output_pitch_map.png",
 ) -> Path:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -239,8 +262,6 @@ def generate_pitch_map(
     cy = canva_cy * scale
 
     text_angle = -float(anchor["text_angle"]) if "text_angle" in anchor and pd.notna(anchor["text_angle"]) else 0.0
-    
-    # Restrict usable text width to 75% of pitch box width to enforce clean multi-line wrapping
     max_w_allowed = raw_w * 0.75 * scale
 
     dummy_draw = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
@@ -299,11 +320,20 @@ def generate_pitch_map(
     dest_y = int(round(cy - (rotated_text.height / 2.0)))
     base_img.alpha_composite(rotated_text, dest=(dest_x, dest_y))
 
-    # Opponent crest in branding area
+    # Opponent and competition logo sizing
     max_crest_w = int(round(OPPONENT_BOX_W * scale))
     max_crest_h = int(round(OPPONENT_BOX_H * scale))
-    crest_img = load_opponent_crest(opponent, max_crest_w, max_crest_h)
 
+    if competition:
+        comp_img = load_competition_logo(competition, max_crest_w, max_crest_h)
+        if comp_img:
+            comp_cx = COMP_LOGO_CX * scale
+            comp_cy = COMP_LOGO_CY * scale
+            comp_dest_x = int(round(comp_cx - (comp_img.width / 2.0)))
+            comp_dest_y = int(round(comp_cy - (comp_img.height / 2.0)))
+            base_img.alpha_composite(comp_img, dest=(comp_dest_x, comp_dest_y))
+
+    crest_img = load_opponent_crest(opponent, max_crest_w, max_crest_h)
     if crest_img:
         crest_cx = OPPONENT_CREST_CX * scale
         crest_cy = OPPONENT_CREST_CY * scale
@@ -311,7 +341,6 @@ def generate_pitch_map(
         crest_dest_y = int(round(crest_cy - (crest_img.height / 2.0)))
         base_img.alpha_composite(crest_img, dest=(crest_dest_x, crest_dest_y))
 
-    # Top-right header overlay
     render_top_right_header(
         base_img=base_img,
         home_team=home_team,
@@ -340,6 +369,8 @@ def process_fixtures_batch(fixtures_excel_path: Path, config_excel_path: Path):
         if "is_provisional" in row and pd.notna(row["is_provisional"]):
             is_prov = str(row["is_provisional"]).strip().upper() in ["TRUE", "1", "YES"]
 
+        comp = str(row["competition"]).strip() if "competition" in row and pd.notna(row["competition"]) else None
+
         generate_pitch_map(
             config_excel_path=config_excel_path,
             pitch_key=str(row["pitch_key"]),
@@ -348,20 +379,6 @@ def process_fixtures_batch(fixtures_excel_path: Path, config_excel_path: Path):
             ko_time=str(row["ko_time"]),
             match_date=str(row["match_date"]),
             is_provisional=is_prov,
+            competition=comp,
             output_filename=out_name,
         )
-
-
-if __name__ == "__main__":
-    config_file = BASE_DIR / "config.xlsx"
-
-    generate_pitch_map(
-        config_excel_path=config_file,
-        pitch_key="P1_WHOLE",
-        home_team="WARRIORS U14",
-        opponent="RWB",
-        ko_time="13:00",
-        match_date="19.04.26",
-        is_provisional=True,
-        output_filename="test_p1_header.png",
-    )

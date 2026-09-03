@@ -1,16 +1,15 @@
 from pathlib import Path
 import io
+import re
 import zipfile
 import pandas as pd
 import streamlit as st
 from PIL import Image
 
-# Import the core engine functions
 from render_pitch_map import (
     BASE_DIR,
     OUTPUT_DIR,
     generate_pitch_map,
-    load_opponent_crest,
 )
 
 CONFIG_PATH = BASE_DIR / "config.xlsx"
@@ -23,6 +22,16 @@ st.set_page_config(
 
 st.title("🏉 HRFC Match-Day Pitch Map Generator")
 
+COMPETITION_LABELS = {
+    "None": "None",
+    "HOB": "HOB",
+    "BYC": "BYC",
+    "BKO": "Berks KO Cup",
+    "U16GIRLSNATCUP": "Girls National Cup",
+    "PUP": "PUP",
+    "OBB": "OBB",
+}
+
 
 @st.cache_data
 def load_config_keys():
@@ -32,7 +41,46 @@ def load_config_keys():
     return df["pitch_key"].dropna().astype(str).tolist()
 
 
+@st.cache_data
+def load_available_logos():
+    comp_dir = BASE_DIR / "assets" / "comp_logos"
+    if not comp_dir.exists():
+        return set()
+    return {f.stem.upper() for f in comp_dir.glob("*.png")}
+
+
+def get_competitions_for_team(team_name: str, available_logos: set[str]) -> list[str]:
+    raw = str(team_name).upper()
+
+    # Warriors rules
+    if "WARRIORS" in raw:
+        if "U12" in raw:
+            allowed = ["PUP"]
+        elif "U14" in raw:
+            allowed = ["BKO", "HOB", "PUP"]
+        elif "U16" in raw:
+            allowed = ["HOB", "U16GIRLSNATCUP"]
+        else:
+            allowed = ["BKO", "HOB", "PUP", "U16GIRLSNATCUP"]
+
+    # Hurricanes & Colts rules
+    elif "HURRICANES" in raw or "COLTS" in raw:
+        allowed = ["OBB"]
+
+    # Junior Boys rules
+    elif any(tag in raw for tag in ["U13", "U14"]):
+        allowed = ["BKO", "BYC"]
+
+    # Other age grades / fallback
+    else:
+        allowed = sorted(list(available_logos))
+
+    valid_codes = [c for c in allowed if c in available_logos]
+    return ["None"] + valid_codes
+
+
 pitch_keys = load_config_keys()
+available_logos = load_available_logos()
 
 tab_single, tab_batch = st.tabs(["Single Fixture", "Batch Processing"])
 
@@ -47,14 +95,24 @@ with tab_single:
 
         pitch_choice = st.selectbox("Select Pitch Allocation", options=pitch_keys)
 
-        home_team = st.text_input("Home Team", value="WARRIORS U14")
-        opponent = st.text_input("Opponent Name", value="Cotswold Lionesses")
+        home_team = st.text_input("Home Team", value="WARRIORS U16")
+        opponent = st.text_input("Opponent Name", value="Tadley RFC")
 
         c_time, c_date = st.columns(2)
         with c_time:
-            ko_time = st.text_input("Kick-Off Time", value="13:00")
+            ko_time = st.text_input("Kick-Off Time", value="10:00")
         with c_date:
             match_date = st.text_input("Match Date", value="19.04.26")
+
+        # Dynamic competition options linked to the home team
+        comp_codes = get_competitions_for_team(home_team, available_logos)
+        selected_code = st.selectbox(
+            "Competition",
+            options=comp_codes,
+            format_func=lambda code: COMPETITION_LABELS.get(code, code),
+            help="Competitions filtered by the selected team",
+        )
+        comp_arg = None if selected_code == "None" else selected_code
 
         is_provisional = st.checkbox("Mark as PROVISIONAL", value=False)
 
@@ -66,7 +124,10 @@ with tab_single:
         if run_single:
             with st.spinner("Rendering visual asset..."):
                 try:
-                    out_name = f"preview_{pitch_choice}_{home_team.replace(' ', '_')}.png"
+                    h_clean = "".join(c for c in home_team if c.isalnum() or c in ("_", "-"))
+                    p_clean = "".join(c for c in pitch_choice if c.isalnum() or c in ("_", "-"))
+                    out_name = f"preview_{p_clean}_{h_clean}.png"
+
                     output_path = generate_pitch_map(
                         config_excel_path=CONFIG_PATH,
                         pitch_key=pitch_choice,
@@ -75,6 +136,7 @@ with tab_single:
                         ko_time=ko_time,
                         match_date=match_date,
                         is_provisional=is_provisional,
+                        competition=comp_arg,
                         output_filename=out_name,
                     )
 
@@ -100,7 +162,7 @@ with tab_single:
 with tab_batch:
     st.subheader("Bulk Fixtures Upload")
     st.markdown(
-        "Upload an Excel (`.xlsx`) or CSV file containing columns: `pitch_key`, `home_team`, `opponent`, `ko_time`, `match_date`, `is_provisional` (optional), `output_filename` (optional)."
+        "Upload an Excel (`.xlsx`) or CSV file containing columns: `pitch_key`, `home_team`, `opponent`, `ko_time`, `match_date`, `competition` (optional), `is_provisional` (optional), `output_filename` (optional)."
     )
 
     uploaded_file = st.file_uploader("Upload Fixtures Sheet", type=["xlsx", "csv"])
@@ -136,6 +198,8 @@ with tab_batch:
                         if "is_provisional" in row and pd.notna(row["is_provisional"]):
                             is_prov = str(row["is_provisional"]).strip().upper() in ["TRUE", "1", "YES"]
 
+                        comp = str(row["competition"]).strip() if "competition" in row and pd.notna(row["competition"]) else None
+
                         out_file_path = generate_pitch_map(
                             config_excel_path=CONFIG_PATH,
                             pitch_key=str(row["pitch_key"]),
@@ -144,6 +208,7 @@ with tab_batch:
                             ko_time=str(row["ko_time"]),
                             match_date=str(row["match_date"]),
                             is_provisional=is_prov,
+                            competition=comp,
                             output_filename=out_name,
                         )
 
