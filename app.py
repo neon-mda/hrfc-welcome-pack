@@ -5,7 +5,6 @@ import re
 import zipfile
 import pandas as pd
 import streamlit as st
-from PIL import Image
 
 from render_pitch_map import generate_pitch_map, get_cached_config_dfs
 from render_parking_map import generate_parking_map
@@ -148,13 +147,13 @@ if mode == "Single Fixture":
 
         home_team = st.selectbox(
             "Home Team",
-            options=home_team_options if home_team_options else ["WARRIORS U14"],
+            options=home_team_options if home_team_options else ["WARRIORS U16"],
             index=0,
         )
 
         opponent = st.selectbox(
             "Opponent",
-            options=opponent_list if opponent_list else ["BRACKNELL RFC"],
+            options=opponent_list if opponent_list else ["ABBEY RFC"],
             index=0,
         )
 
@@ -162,12 +161,17 @@ if mode == "Single Fixture":
         with col_ko:
             ko_time = st.text_input("Kick-Off Time", value="10:00")
         with col_date:
-            match_date_val = st.date_input("Match Date", value=get_next_sunday())
-            match_date_str = match_date_val.strftime("%d.%m.%y")
+            match_date_val = st.date_input(
+                "Match Date",
+                value=get_next_sunday(),
+                format="DD/MM/YYYY",
+            )
+            match_date_str = match_date_val.strftime("%d %b %Y").upper()
+            st.caption(f"Formatted: **{match_date_str}**")
 
         col_ref, col_comp = st.columns(2)
         with col_ref:
-            referee = st.text_input("Referee", value="TBA")
+            referee = st.text_input("Referee", value="TBC")
 
         with col_comp:
             comp_options, alias_to_code_map = get_competitions_for_team(home_team, comps_df)
@@ -310,8 +314,8 @@ else:
                         opp = str(row["opponent"]).upper()
                         pkey = str(row["pitch_key"])
                         ko = str(row["ko_time"])
-                        ref = str(row.get("referee", "TBA"))
-                        mdate = str(row.get("match_date", get_next_sunday().strftime("%d.%m.%y")))
+                        ref = str(row.get("referee", "TBC"))
+                        mdate = str(row.get("match_date", get_next_sunday().strftime("%d %b %Y").upper()))
                         prov = str(row.get("is_provisional", "false")).strip().upper() in [
                             "TRUE",
                             "1",

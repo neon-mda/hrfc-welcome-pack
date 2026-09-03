@@ -25,7 +25,6 @@ OPP_BOX_H = 245.0
 
 TITLE_BOX_X = 256.8
 TITLE_BOX_Y = 158.1
-MAX_TITLE_WIDTH = 1150.0
 
 META_BOX_X = 162.5
 META_BOX_Y = 639.3
@@ -34,8 +33,6 @@ COMP_BOX_X = 256.8
 COMP_BOX_Y = 449.1
 COMP_BOX_W = 144.7
 COMP_BOX_H = 144.7
-
-GOLD_ACCENT = (241, 180, 52, 255)
 
 
 def hex_to_rgba(hex_code: str, alpha: int = 255) -> tuple[int, int, int, int]:
@@ -51,24 +48,86 @@ def hex_to_rgba(hex_code: str, alpha: int = 255) -> tuple[int, int, int, int]:
 
 
 @lru_cache(maxsize=4)
-def get_cached_teams_df(config_excel_path_str: str) -> pd.DataFrame:
+def get_cached_config_sheet(config_excel_path_str: str, sheet_name: str) -> pd.DataFrame:
     try:
-        return pd.read_excel(config_excel_path_str, sheet_name="teams")
+        return pd.read_excel(config_excel_path_str, sheet_name=sheet_name)
     except Exception:
         return pd.DataFrame()
 
 
-def get_warrior_white() -> tuple[int, int, int, int]:
+def get_team_prefix(home_team: str) -> str:
+    clean = str(home_team).strip().upper()
+    if "WARRIOR" in clean:
+        return "WARRIORS"
+    elif "HURRICANE" in clean:
+        return "HURRICANES"
+    return "HRFC"
+
+
+def get_team_colors(home_team: str) -> tuple[tuple[int, int, int, int], tuple[int, int, int, int]]:
+    prefix = get_team_prefix(home_team)
+
+    fallback_primary = "#FFFFFF"
+    fallback_accent = "#F1B434" if prefix == "WARRIORS" else "#FFE602"
+
+    primary_rgba = hex_to_rgba(fallback_primary)
+    accent_rgba = hex_to_rgba(fallback_accent)
+
     if CONFIG_PATH.exists():
-        teams_df = get_cached_teams_df(str(CONFIG_PATH.resolve()))
+        teams_df = get_cached_config_sheet(str(CONFIG_PATH.resolve()), "teams")
         if not teams_df.empty and "team_prefix" in teams_df.columns:
-            matched = teams_df[teams_df["team_prefix"].astype(str).str.strip().str.upper() == "WARRIORS"]
+            matched = teams_df[teams_df["team_prefix"].astype(str).str.strip().str.upper() == prefix]
             if not matched.empty:
                 row = matched.iloc[0]
-                for col in ["text_color_hex", "primary_color", "white_color", "text_color"]:
+                for col in ["text_color_hex", "primary_color", "white_color", "text_color", "lead_color"]:
                     if col in row and pd.notna(row[col]):
-                        return hex_to_rgba(str(row[col]).strip())
-    return (255, 255, 255, 255)
+                        primary_rgba = hex_to_rgba(str(row[col]).strip())
+                        break
+
+                for col in ["accent_color_hex", "accent_color", "secondary_color", "accent"]:
+                    if col in row and pd.notna(row[col]):
+                        accent_rgba = hex_to_rgba(str(row[col]).strip())
+                        break
+
+    return primary_rgba, accent_rgba
+
+
+def get_font_specifications() -> dict:
+    specs = {
+        "bold_file": "Poppins-Bold.ttf",
+        "regular_file": "Poppins-Regular.ttf",
+        "title_pt": 71.1,
+        "v_pt": 26.1,
+        "subtitle_pt": 66.0,
+        "date_pt": 57.0,
+        "meta_pt": 46.0,
+        "para_spacer_pt": 24.0,
+    }
+
+    if CONFIG_PATH.exists():
+        fonts_df = get_cached_config_sheet(str(CONFIG_PATH.resolve()), "fonts")
+        if fonts_df.empty:
+            fonts_df = get_cached_config_sheet(str(CONFIG_PATH.resolve()), "typography")
+
+        if not fonts_df.empty:
+            if "key" in fonts_df.columns and "value" in fonts_df.columns:
+                kv = dict(zip(fonts_df["key"].astype(str).str.strip().str.lower(), fonts_df["value"]))
+                for k, v in kv.items():
+                    if k in specs and pd.notna(v):
+                        try:
+                            specs[k] = float(v) if isinstance(specs[k], float) else str(v).strip()
+                        except ValueError:
+                            pass
+            else:
+                row = fonts_df.iloc[0]
+                for k in specs.keys():
+                    if k in row and pd.notna(row[k]):
+                        try:
+                            specs[k] = float(row[k]) if isinstance(specs[k], float) else str(row[k]).strip()
+                        except ValueError:
+                            pass
+
+    return specs
 
 
 @lru_cache(maxsize=8)
@@ -81,22 +140,23 @@ def get_cached_font(font_path_str: str, size_px: int) -> ImageFont.FreeTypeFont:
     return ImageFont.truetype(font_path_str, size=size_px)
 
 
-def resolve_font_path(bold: bool = True) -> Path:
-    target_name = "Poppins-Bold.ttf" if bold else "Poppins-Regular.ttf"
-    font_path = FONTS_DIR / target_name
-    if font_path.exists():
-        return font_path
+def resolve_font_path(filename: str) -> Path:
+    target = FONTS_DIR / filename
+    if target.exists():
+        return target
 
-    alt_candidates = [
-        FONTS_DIR / ("Aptos-Bold.ttf" if bold else "Aptos.ttf"),
-        FONTS_DIR / "Poppins-Medium.ttf",
+    fallbacks = [
+        FONTS_DIR / "Poppins-Bold.ttf",
+        FONTS_DIR / "Aptos-Bold.ttf",
+        FONTS_DIR / "Poppins-Regular.ttf",
+        FONTS_DIR / "Aptos.ttf",
     ]
-    for alt in alt_candidates:
-        if alt.exists():
-            return alt
+    for fb in fallbacks:
+        if fb.exists():
+            return fb
 
-    generic_fallbacks = list(FONTS_DIR.glob("*.ttf")) + list(FONTS_DIR.glob("*.otf"))
-    return generic_fallbacks[0] if generic_fallbacks else Path()
+    any_fonts = list(FONTS_DIR.glob("*.ttf")) + list(FONTS_DIR.glob("*.otf"))
+    return any_fonts[0] if any_fonts else Path()
 
 
 @lru_cache(maxsize=64)
@@ -208,31 +268,31 @@ def parse_cover_date_parts(date_str: str | None) -> tuple[str, str]:
     return clean.upper(), ""
 
 
-def parse_pack_parts(home_team: str) -> tuple[str, str]:
+def get_pack_subtitle_parts(
+    home_team: str,
+    lead_color: tuple[int, int, int, int],
+    accent_color: tuple[int, int, int, int],
+    font: ImageFont.FreeTypeFont,
+) -> list[tuple[str, ImageFont.FreeTypeFont, tuple[int, int, int, int]]]:
     clean = str(home_team).strip().upper()
     match = re.search(r"\bU\d+\b", clean)
+
+    prefix = ""
     if match:
-        return f"{match.group(0)} ", "WELCOME PACK"
-    if "COLTS" in clean:
-        return "COLTS ", "WELCOME PACK"
-    return "", "WELCOME PACK"
+        prefix = match.group(0)
+    elif "COLTS" in clean:
+        prefix = "COLTS"
 
-
-def measure_multipart_line(
-    parts: list[tuple[str, ImageFont.FreeTypeFont, tuple[int, int, int, int]]],
-    draw: ImageDraw.ImageDraw,
-) -> tuple[int, int]:
-    total_w = 0
-    max_h = 0
-    for text, font, _ in parts:
-        if not text:
-            continue
-        bbox = draw.textbbox((0, 0), text, font=font)
-        total_w += bbox[2] - bbox[0]
-        h = bbox[3] - bbox[1]
-        if h > max_h:
-            max_h = h
-    return total_w, max_h
+    if prefix:
+        return [
+            (f"{prefix} ", font, lead_color),
+            ("WELCOME PACK", font, accent_color),
+        ]
+    else:
+        return [
+            ("WELCOME ", font, lead_color),
+            ("PACK", font, accent_color),
+        ]
 
 
 def render_multipart_line(
@@ -240,20 +300,19 @@ def render_multipart_line(
     parts: list[tuple[str, ImageFont.FreeTypeFont, tuple[int, int, int, int]]],
     start_x: int,
     start_y: int,
-) -> int:
+) -> None:
     cur_x = start_x
-    max_h = 0
     for text, font, color in parts:
         if not text:
             continue
         draw.text((cur_x, start_y), text, font=font, fill=color)
         bbox = draw.textbbox((0, 0), text, font=font)
-        w = bbox[2] - bbox[0]
-        h = bbox[3] - bbox[1]
-        cur_x += w
-        if h > max_h:
-            max_h = h
-    return max_h
+        cur_x += bbox[2] - bbox[0]
+
+
+def get_line_height(font: ImageFont.FreeTypeFont) -> int:
+    ascent, descent = font.getmetrics()
+    return ascent + descent
 
 
 def generate_front_cover(
@@ -272,10 +331,11 @@ def generate_front_cover(
     base_img = get_cached_base_image(str(base_image_path.resolve())).copy()
     scale = base_img.width / CANVA_DESIGN_WIDTH
 
-    path_bold = resolve_font_path(bold=True)
-    path_reg = resolve_font_path(bold=False)
+    font_specs = get_font_specifications()
+    lead_color, accent_color = get_team_colors(home_team)
 
-    warrior_white = get_warrior_white()
+    path_bold = resolve_font_path(str(font_specs["bold_file"]))
+    path_reg = resolve_font_path(str(font_specs["regular_file"]))
 
     # 1. Opposition Crest
     opp_w = int(round(OPP_BOX_W * scale))
@@ -306,146 +366,94 @@ def generate_front_cover(
     txt_layer = Image.new("RGBA", base_img.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(txt_layer)
 
-    # --- Title Block Configuration ---
-    base_title_fs = int(round(71.1 * scale))
-    v_fs = int(round(26.1 * scale))
-    font_v = get_cached_font(str(path_bold.resolve()), v_fs) if path_bold.exists() else ImageFont.load_default()
+    # --- Title Block Typography ---
+    font_team = get_cached_font(str(path_bold.resolve()), int(round(font_specs["title_pt"] * scale)))
+    font_v = get_cached_font(str(path_bold.resolve()), int(round(font_specs["v_pt"] * scale)))
 
-    # Determine Opponent Line Parts
+    t_box_x = int(round(TITLE_BOX_X * scale))
+    cur_y = int(round(TITLE_BOX_Y * scale))
+
+    # Line 1: Home Team
+    prefix = get_team_prefix(home_team)
+    if prefix == "WARRIORS":
+        line1_parts = [
+            ("BERKSHIRE ", font_team, lead_color),
+            ("WARRIORS", font_team, accent_color),
+        ]
+    elif prefix == "HURRICANES":
+        line1_parts = [
+            ("HUNGERFORD ", font_team, lead_color),
+            ("HURRICANES", font_team, accent_color),
+        ]
+    else:
+        line1_parts = [
+            ("HUNGERFORD ", font_team, lead_color),
+            ("RFC", font_team, accent_color),
+        ]
+    render_multipart_line(draw, line1_parts, t_box_x, cur_y)
+    cur_y += get_line_height(font_team)
+
+    # Line 2: V
+    draw.text((t_box_x, cur_y), "V", font=font_v, fill=accent_color)
+    cur_y += get_line_height(font_v)
+
+    # Line 3: Opponent
     raw_opp = str(opponent).strip().upper()
     opp_match = re.search(r"^(.*?)(?:\s+(RFC|RUFC|WRFC))?$", raw_opp)
     if opp_match:
         club_base = opp_match.group(1).strip()
         club_suffix = opp_match.group(2)
-    else:
-        club_base = raw_opp
-        club_suffix = None
-
-    # Auto-fit title font if club name is very long
-    max_w_px = MAX_TITLE_WIDTH * scale
-    current_title_fs = base_title_fs
-    font_title = get_cached_font(str(path_bold.resolve()), current_title_fs) if path_bold.exists() else ImageFont.load_default()
-
-    dummy_parts = [(f"{club_base} ", font_title, warrior_white)]
-    if club_suffix:
-        dummy_parts.append((club_suffix, font_title, GOLD_ACCENT))
-    opp_w_meas, _ = measure_multipart_line(dummy_parts, draw)
-
-    while opp_w_meas > max_w_px and current_title_fs > int(round(46.0 * scale)):
-        current_title_fs -= 2
-        font_title = get_cached_font(str(path_bold.resolve()), current_title_fs)
-        dummy_parts = [(f"{club_base} ", font_title, warrior_white)]
         if club_suffix:
-            dummy_parts.append((club_suffix, font_title, GOLD_ACCENT))
-        opp_w_meas, _ = measure_multipart_line(dummy_parts, draw)
-
-    t_box_x = int(round(TITLE_BOX_X * scale))
-    line1_y = int(round(TITLE_BOX_Y * scale))
-
-    # Line 1 Parts
-    clean_home = str(home_team).strip().upper()
-    if "WARRIOR" in clean_home:
-        line1_parts = [
-            ("BERKSHIRE ", font_title, warrior_white),
-            ("WARRIORS", font_title, GOLD_ACCENT),
-        ]
-    elif "HURRICANE" in clean_home:
-        line1_parts = [
-            ("HUNGERFORD ", font_title, warrior_white),
-            ("HURRICANES", font_title, GOLD_ACCENT),
-        ]
+            line3_parts = [
+                (f"{club_base} ", font_team, lead_color),
+                (club_suffix, font_team, accent_color),
+            ]
+        else:
+            line3_parts = [(club_base, font_team, lead_color)]
     else:
-        line1_parts = [
-            ("HUNGERFORD ", font_title, warrior_white),
-            ("RFC", font_title, GOLD_ACCENT),
-        ]
-
-    # Line 3 Parts
-    if club_suffix:
-        line3_parts = [
-            (f"{club_base} ", font_title, warrior_white),
-            (club_suffix, font_title, GOLD_ACCENT),
-        ]
-    else:
-        line3_parts = [(club_base, font_title, warrior_white)]
-
-    # Draw Line 1
-    render_multipart_line(draw, line1_parts, t_box_x, line1_y)
-
-    # Compute bounding ink bottoms and tops for strict equidistance
-    # Dummy draw to get exact bounding box of Line 1
-    _, line1_h = measure_multipart_line(line1_parts, draw)
-    line1_bottom = line1_y + line1_h
-
-    # v glyph vertical ink bounds relative to render point
-    v_bbox = draw.textbbox((0, 0), "v", font=font_v)
-    v_top_offset = v_bbox[1]
-    v_height = v_bbox[3] - v_bbox[1]
-
-    # Desired clear gap above and below v
-    equidistant_gap = int(round(16.0 * scale))
-
-    # Position v so its top ink edge is exactly equidistant_gap below line 1 bottom
-    v_render_y = line1_bottom + equidistant_gap - v_top_offset
-    draw.text((t_box_x, v_render_y), "v", font=font_v, fill=GOLD_ACCENT)
-
-    # Position Line 3 so its top ink edge is exactly equidistant_gap below v bottom ink edge
-    v_bottom = (v_render_y + v_top_offset) + v_height
-    line3_y = v_bottom + equidistant_gap
-
-    # Draw Line 3
-    render_multipart_line(draw, line3_parts, t_box_x, line3_y)
+        line3_parts = [(raw_opp, font_team, lead_color)]
+    render_multipart_line(draw, line3_parts, t_box_x, cur_y)
 
     # --- Subtitle & Match Details Block ---
-    fs_sub = int(round(66.0 * scale))
-    fs_date = int(round(57.0 * scale))
-    fs_meta = int(round(46.0 * scale))
-
-    font_sub = get_cached_font(str(path_bold.resolve()), fs_sub) if path_bold.exists() else ImageFont.load_default()
-    font_date = get_cached_font(str(path_bold.resolve()), fs_date) if path_bold.exists() else ImageFont.load_default()
-    font_meta = get_cached_font(str(path_reg.resolve()), fs_meta) if path_reg.exists() else ImageFont.load_default()
+    font_sub = get_cached_font(str(path_bold.resolve()), int(round(font_specs["subtitle_pt"] * scale)))
+    font_date = get_cached_font(str(path_bold.resolve()), int(round(font_specs["date_pt"] * scale)))
+    font_meta = get_cached_font(str(path_reg.resolve()), int(round(font_specs["meta_pt"] * scale)))
 
     m_box_x = int(round(META_BOX_X * scale))
     cur_my = int(round(META_BOX_Y * scale))
-    meta_line_gap = int(round(10.0 * scale))
 
-    # Line 1: UXX (White) + WELCOME PACK (Gold)
-    age_prefix, pack_suffix = parse_pack_parts(home_team)
-    sub_parts = []
-    if age_prefix:
-        sub_parts.append((age_prefix, font_sub, warrior_white))
-    sub_parts.append((pack_suffix, font_sub, GOLD_ACCENT))
-    s_h = render_multipart_line(draw, sub_parts, m_box_x, cur_my)
-    cur_my += s_h + meta_line_gap
+    # Line 1: Subtitle (Prefix in Lead, WELCOME PACK in Accent OR WELCOME in Lead, PACK in Accent)
+    sub_parts = get_pack_subtitle_parts(home_team, lead_color, accent_color, font_sub)
+    render_multipart_line(draw, sub_parts, m_box_x, cur_my)
+    cur_my += int(round(font_specs["subtitle_pt"] * scale))
 
-    # Line 2: DD MMM (White) + YYYY (Gold)
+    # Line 2: DD MMM (Lead) + YYYY (Accent)
     day_month, year_str = parse_cover_date_parts(match_date)
     if day_month or year_str:
         date_parts = [
-            (day_month, font_date, warrior_white),
-            (year_str, font_date, GOLD_ACCENT),
+            (day_month, font_date, lead_color),
+            (year_str, font_date, accent_color),
         ]
-        d_h = render_multipart_line(draw, date_parts, m_box_x, cur_my)
-        cur_my += d_h + meta_line_gap
+        render_multipart_line(draw, date_parts, m_box_x, cur_my)
+        cur_my += int(round(font_specs["date_pt"] * scale))
 
-    # Distinct gap separating the pack title/date block from ko/referee
-    date_ko_spacer = int(round(30.0 * scale))
-    cur_my += date_ko_spacer
+    # Paragraph gap between Date and KO/Ref
+    cur_my += int(round(font_specs["para_spacer_pt"] * scale))
 
-    # Line 3: ko (White) + Time (Gold)
+    # Line 3: ko (Lead) + Time (Accent)
     clean_ko = str(ko_time).strip()
     ko_parts = [
-        ("ko ", font_meta, warrior_white),
-        (clean_ko, font_meta, GOLD_ACCENT),
+        ("ko ", font_meta, lead_color),
+        (clean_ko, font_meta, accent_color),
     ]
-    k_h = render_multipart_line(draw, ko_parts, m_box_x, cur_my)
-    cur_my += k_h + meta_line_gap
+    render_multipart_line(draw, ko_parts, m_box_x, cur_my)
+    cur_my += int(round(font_specs["meta_pt"] * scale))
 
-    # Line 4: Referee (White) + Official Name (Gold)
+    # Line 4: Referee (Lead) + Official Name (Accent)
     ref_name = referee.strip() if referee and referee.strip() else "TBC"
     ref_parts = [
-        ("Referee ", font_meta, warrior_white),
-        (ref_name, font_meta, GOLD_ACCENT),
+        ("Referee ", font_meta, lead_color),
+        (ref_name, font_meta, accent_color),
     ]
     render_multipart_line(draw, ref_parts, m_box_x, cur_my)
 
@@ -462,7 +470,7 @@ if __name__ == "__main__":
         home_team="WARRIORS U16",
         opponent="ELLINGHAM & RINGWOOD RFC",
         ko_time="10:00",
-        match_date="06.09.26",
+        match_date="06 SEP 2026",
         referee="TBC",
         opponent_crest_stem="ELLINGHAM & RINGWOOD",
         competition="HOB",
