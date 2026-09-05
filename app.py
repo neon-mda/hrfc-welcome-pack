@@ -7,14 +7,20 @@ import pandas as pd
 import streamlit as st
 
 from render_pitch_map import generate_pitch_map, get_cached_config_dfs
-from render_parking_map import generate_parking_map
 from render_front_cover import generate_front_cover
+from render_locnotes import generate_locnotes_page
 
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "config.xlsx"
 ASSETS_DIR = BASE_DIR / "assets"
 OPPOSITIONS_DIR = ASSETS_DIR / "oppositions"
 OUTPUT_DIR = BASE_DIR / "output"
+
+DEFAULT_NOTES = (
+    "Please note the club is expected to be very busy this weekend. "
+    "We kindly ask all visiting and home families to car-share wherever possible "
+    "and follow the directions of our parking marshals."
+)
 
 st.set_page_config(
     page_title="HRFC Match-Day Asset Generator",
@@ -38,31 +44,33 @@ def get_config_mtime() -> float:
 @st.cache_data
 def load_base_metadata(mtime: float):
     anchors_df, _ = get_cached_config_dfs(CONFIG_PATH)
-    pitch_keys = anchors_df["pitch_key"].dropna().unique().tolist()
+
+    pitch_keys = []
+    if not anchors_df.empty:
+        key_col = next((c for c in anchors_df.columns if str(c).strip().lower() == "pitch_key"), None)
+        if key_col:
+            pitch_keys = [
+                str(x).strip()
+                for x in anchors_df[key_col].dropna().unique().tolist()
+                if str(x).strip() and str(x).strip().upper() != "NAN"
+            ]
+        else:
+            st.error("Sheet 'pitch_anchors' was found, but column 'pitch_key' is missing.")
+    else:
+        st.error(f"Could not load 'pitch_anchors' sheet from {CONFIG_PATH.name}.")
 
     opponents_df = pd.DataFrame()
     opponents = []
     try:
         opponents_df = pd.read_excel(CONFIG_PATH, sheet_name="opponents")
-
         name_col = next(
             (
                 c
                 for c in opponents_df.columns
-                if str(c).strip().lower() in ["display_name", "displayname", "display"]
+                if str(c).strip().lower() in ["display_name", "displayname", "display", "opponent", "club", "team"]
             ),
             None,
         )
-        if not name_col:
-            name_col = next(
-                (
-                    c
-                    for c in opponents_df.columns
-                    if str(c).strip().lower() in ["opponent", "club", "team"]
-                ),
-                None,
-            )
-
         if name_col:
             opponents = [
                 str(x).strip().upper()
@@ -108,11 +116,18 @@ def get_competitions_for_team(team_key: str, comps_df: pd.DataFrame) -> tuple[li
     for _, row in matched.iterrows():
         comp_alias_raw = row.get("comp_alias")
         comp_name_raw = row.get("comp_name")
+        logo_id_raw = row.get("logo_id")
 
         if pd.notna(comp_alias_raw):
             alias_upper = str(comp_alias_raw).strip().upper()
             if alias_upper and alias_upper not in ["NONE", "NAN", "FRIENDLY"]:
-                code_str = str(comp_name_raw).strip() if pd.notna(comp_name_raw) else alias_upper
+                if pd.notna(logo_id_raw) and str(logo_id_raw).strip():
+                    code_str = str(logo_id_raw).strip()
+                elif pd.notna(comp_name_raw) and str(comp_name_raw).strip():
+                    code_str = str(comp_name_raw).strip()
+                else:
+                    code_str = alias_upper
+
                 if alias_upper not in options:
                     options.append(alias_upper)
                     alias_to_code_map[alias_upper] = code_str
@@ -184,6 +199,13 @@ if mode == "Single Fixture":
 
         is_provisional = st.checkbox("Mark as PROVISIONAL", value=False)
 
+        matchday_notes = st.text_area(
+            "Club / Parking Commentary (Page 5 Notes)",
+            value=DEFAULT_NOTES,
+            height=90,
+            help="Dynamic text displayed to the right of the QR code on the location notes plate.",
+        )
+
         opp_alias = None
         opp_crest = None
         if not opponents_meta_df.empty:
@@ -241,61 +263,64 @@ if mode == "Single Fixture":
                     output_filename="preview_pitch_map.png",
                 )
 
-                parking_path = generate_parking_map(
+                locnotes_path = generate_locnotes_page(
                     home_team=home_team,
                     opponent=opponent,
                     opponent_crest_stem=opp_crest,
                     competition=comp_code,
-                    output_filename="preview_parking_map.png",
+                    custom_notes=matchday_notes,
+                    output_filename="preview_locnotes.png",
                 )
 
                 st.session_state["cover_img"] = cover_path
                 st.session_state["pitch_img"] = pitch_path
-                st.session_state["parking_img"] = parking_path
+                st.session_state["locnotes_img"] = locnotes_path
 
-        tab_cover, tab_pitch, tab_parking = st.tabs(["📖 Front Cover", "🏟️ Pitch Map", "🚗 Parking Map"])
+        tab_cover, tab_pitch, tab_locnotes = st.tabs(
+            ["📖 Front Cover", "🏟️ Pitch Map", "🚗 Location & Parking"]
+        )
 
         with tab_cover:
             if "cover_img" in st.session_state and Path(st.session_state["cover_img"]).exists():
                 st.image(str(st.session_state["cover_img"]), use_container_width=True)
                 with open(st.session_state["cover_img"], "rb") as f:
                     st.download_button(
-                        label="Download Front Cover",
+                        label="Download Cover (PNG)",
                         data=f,
                         file_name=f"cover_{home_team}_v_{opponent}.png".replace(" ", "_"),
                         mime="image/png",
                         use_container_width=True,
                     )
             else:
-                st.info("Click 'Generate Assets' to preview the Front Cover.")
+                st.info("Click 'Generate Assets' to preview.")
 
         with tab_pitch:
             if "pitch_img" in st.session_state and Path(st.session_state["pitch_img"]).exists():
                 st.image(str(st.session_state["pitch_img"]), use_container_width=True)
                 with open(st.session_state["pitch_img"], "rb") as f:
                     st.download_button(
-                        label="Download Pitch Map",
+                        label="Download Pitch Map (PNG)",
                         data=f,
                         file_name=f"pitch_map_{home_team}_{selected_pitch}.png".replace(" ", "_"),
                         mime="image/png",
                         use_container_width=True,
                     )
             else:
-                st.info("Click 'Generate Assets' to preview the Pitch Map.")
+                st.info("Click 'Generate Assets' to preview.")
 
-        with tab_parking:
-            if "parking_img" in st.session_state and Path(st.session_state["parking_img"]).exists():
-                st.image(str(st.session_state["parking_img"]), use_container_width=True)
-                with open(st.session_state["parking_img"], "rb") as f:
+        with tab_locnotes:
+            if "locnotes_img" in st.session_state and Path(st.session_state["locnotes_img"]).exists():
+                st.image(str(st.session_state["locnotes_img"]), use_container_width=True)
+                with open(st.session_state["locnotes_img"], "rb") as f:
                     st.download_button(
-                        label="Download Parking Map",
+                        label="Download Location & Parking (PNG)",
                         data=f,
-                        file_name=f"parking_map_{home_team}_v_{opponent}.png".replace(" ", "_"),
+                        file_name=f"locnotes_{home_team}_v_{opponent}.png".replace(" ", "_"),
                         mime="image/png",
                         use_container_width=True,
                     )
             else:
-                st.info("Click 'Generate Assets' to preview the Parking Map.")
+                st.info("Click 'Generate Assets' to preview.")
 
 else:
     st.subheader("Batch Processing")
@@ -307,7 +332,7 @@ else:
 
         if st.button("Run Full Matchday Batch", type="primary"):
             zip_buffer = io.BytesIO()
-            with st.spinner("Compiling full matchday packages..."):
+            with st.spinner("Compiling graphics..."):
                 with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
                     for idx, row in fixtures_df.iterrows():
                         team = str(row["home_team"])
@@ -316,6 +341,7 @@ else:
                         ko = str(row["ko_time"])
                         ref = str(row.get("referee", "TBC"))
                         mdate = str(row.get("match_date", get_next_sunday().strftime("%d %b %Y").upper()))
+                        notes = str(row.get("custom_notes", DEFAULT_NOTES))
                         prov = str(row.get("is_provisional", "false")).strip().upper() in [
                             "TRUE",
                             "1",
@@ -368,19 +394,20 @@ else:
                         )
                         zip_file.write(p_path, arcname=f"pitch_maps/{p_file}")
 
-                        park_file = f"parking_{clean_team}_v_{clean_opp}_{idx}.png"
-                        park_path = generate_parking_map(
+                        ln_file = f"locnotes_{clean_team}_v_{clean_opp}_{idx}.png"
+                        ln_path = generate_locnotes_page(
                             home_team=team,
                             opponent=opp,
                             opponent_crest_stem=c_stem,
                             competition=comp,
-                            output_filename=park_file,
+                            custom_notes=notes,
+                            output_filename=ln_file,
                         )
-                        zip_file.write(park_path, arcname=f"parking_maps/{park_file}")
+                        zip_file.write(ln_path, arcname=f"locnotes_pages/{ln_file}")
 
             st.success("Batch generation complete.")
             st.download_button(
-                label="Download Matchday Pack (.zip)",
+                label="Download Assets (.zip)",
                 data=zip_buffer.getvalue(),
                 file_name="HRFC_Matchday_Assets.zip",
                 mime="application/zip",

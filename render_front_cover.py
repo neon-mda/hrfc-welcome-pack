@@ -14,10 +14,8 @@ OPPOSITIONS_DIR = ASSETS_DIR / "oppositions"
 COMP_LOGOS_DIR = ASSETS_DIR / "comp_logos"
 OUTPUT_DIR = BASE_DIR / "output"
 
-# Base Canva Coordinate Space
 CANVA_DESIGN_WIDTH = 1920.0
 
-# Canva Bounding Boxes
 OPP_BOX_X = 7.0
 OPP_BOX_Y = 313.9
 OPP_BOX_W = 230.3
@@ -59,9 +57,9 @@ def get_team_prefix(home_team: str) -> str:
     clean = str(home_team).strip().upper()
     if "WARRIOR" in clean:
         return "WARRIORS"
-    elif "HURRICANE" in clean:
+    if "HURRICANE" in clean:
         return "HURRICANES"
-    return "HRFC"
+    return "DEFAULT"
 
 
 def get_team_colors(home_team: str) -> tuple[tuple[int, int, int, int], tuple[int, int, int, int]]:
@@ -214,35 +212,41 @@ def load_competition_logo(comp_code: str | None, max_w_px: int, max_h_px: int) -
     if not comp_code or pd.isna(comp_code):
         return None
 
-    clean_code = str(comp_code).strip()
-    if not clean_code or clean_code.upper() in ["NONE", "FRIENDLY", "NAN"]:
+    clean_stem = str(comp_code).strip()
+    clean_stem = re.sub(r"\.(png|jpg|jpeg)$", "", clean_stem, flags=re.IGNORECASE)
+    if not clean_stem or clean_stem.upper() in ["NONE", "FRIENDLY", "NAN"]:
         return None
 
-    for ext in [".png", ".PNG", ".jpg", ".JPG", ".jpeg", ".JPEG"]:
-        candidate = COMP_LOGOS_DIR / f"{clean_code}{ext}"
-        if candidate.exists():
-            img = Image.open(candidate).convert("RGBA")
-            img.thumbnail((max_w_px, max_h_px), Image.Resampling.LANCZOS)
-            return img
+    candidates = [
+        clean_stem,
+        clean_stem.upper(),
+        clean_stem.replace(" ", "_"),
+        clean_stem.replace(" ", "_").upper(),
+        clean_stem.replace(" ", ""),
+        clean_stem.replace(" ", "").upper(),
+    ]
+
+    for stem in candidates:
+        for ext in [".png", ".PNG", ".jpg", ".JPG", ".jpeg", ".JPEG"]:
+            candidate = COMP_LOGOS_DIR / f"{stem}{ext}"
+            if candidate.exists():
+                img = Image.open(candidate).convert("RGBA")
+                img.thumbnail((max_w_px, max_h_px), Image.Resampling.LANCZOS)
+                return img
 
     return None
 
 
 def get_cover_base_path(home_team: str) -> Path:
-    clean = str(home_team).strip().upper()
-    if "WARRIOR" in clean:
-        stem = "COVER_WARRIORS"
-    elif "HURRICANE" in clean:
-        stem = "COVER_HURRICANES"
-    else:
-        stem = "COVER_DEFAULT"
+    prefix = get_team_prefix(home_team)
+    stem = f"COVER_{prefix}"
 
     for ext in [".png", ".PNG", ".jpg", ".JPG", ".jpeg", ".JPEG"]:
         candidate = COVERS_DIR / f"{stem}{ext}"
         if candidate.exists():
             return candidate
 
-    raise FileNotFoundError(f"Cover background template not found for stem: {stem} in {COVERS_DIR}")
+    raise FileNotFoundError(f"Cover template not found for stem: {stem} in {COVERS_DIR}")
 
 
 def parse_cover_date_parts(date_str: str | None) -> tuple[str, str]:
@@ -337,7 +341,7 @@ def generate_front_cover(
     path_bold = resolve_font_path(str(font_specs["bold_file"]))
     path_reg = resolve_font_path(str(font_specs["regular_file"]))
 
-    # 1. Opposition Crest
+    # 1. Opponent Crest
     opp_w = int(round(OPP_BOX_W * scale))
     opp_h = int(round(OPP_BOX_H * scale))
     lookup_name = opponent_crest_stem if opponent_crest_stem else opponent
@@ -362,18 +366,16 @@ def generate_front_cover(
             dest_y = int(round(cy - (comp_img.height / 2.0)))
             base_img.alpha_composite(comp_img, dest=(dest_x, dest_y))
 
-    # 3. Dynamic Text Layer
+    # 3. Dynamic Typography Layer
     txt_layer = Image.new("RGBA", base_img.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(txt_layer)
 
-    # --- Title Block Typography ---
     font_team = get_cached_font(str(path_bold.resolve()), int(round(font_specs["title_pt"] * scale)))
     font_v = get_cached_font(str(path_bold.resolve()), int(round(font_specs["v_pt"] * scale)))
 
     t_box_x = int(round(TITLE_BOX_X * scale))
     cur_y = int(round(TITLE_BOX_Y * scale))
 
-    # Line 1: Home Team
     prefix = get_team_prefix(home_team)
     if prefix == "WARRIORS":
         line1_parts = [
@@ -393,11 +395,9 @@ def generate_front_cover(
     render_multipart_line(draw, line1_parts, t_box_x, cur_y)
     cur_y += get_line_height(font_team)
 
-    # Line 2: V
     draw.text((t_box_x, cur_y), "V", font=font_v, fill=accent_color)
     cur_y += get_line_height(font_v)
 
-    # Line 3: Opponent
     raw_opp = str(opponent).strip().upper()
     opp_match = re.search(r"^(.*?)(?:\s+(RFC|RUFC|WRFC))?$", raw_opp)
     if opp_match:
@@ -414,7 +414,6 @@ def generate_front_cover(
         line3_parts = [(raw_opp, font_team, lead_color)]
     render_multipart_line(draw, line3_parts, t_box_x, cur_y)
 
-    # --- Subtitle & Match Details Block ---
     font_sub = get_cached_font(str(path_bold.resolve()), int(round(font_specs["subtitle_pt"] * scale)))
     font_date = get_cached_font(str(path_bold.resolve()), int(round(font_specs["date_pt"] * scale)))
     font_meta = get_cached_font(str(path_reg.resolve()), int(round(font_specs["meta_pt"] * scale)))
@@ -422,12 +421,12 @@ def generate_front_cover(
     m_box_x = int(round(META_BOX_X * scale))
     cur_my = int(round(META_BOX_Y * scale))
 
-    # Line 1: Subtitle (Prefix in Lead, WELCOME PACK in Accent OR WELCOME in Lead, PACK in Accent)
+    # Subtitle
     sub_parts = get_pack_subtitle_parts(home_team, lead_color, accent_color, font_sub)
     render_multipart_line(draw, sub_parts, m_box_x, cur_my)
     cur_my += int(round(font_specs["subtitle_pt"] * scale))
 
-    # Line 2: DD MMM (Lead) + YYYY (Accent)
+    # Match Date
     day_month, year_str = parse_cover_date_parts(match_date)
     if day_month or year_str:
         date_parts = [
@@ -437,10 +436,9 @@ def generate_front_cover(
         render_multipart_line(draw, date_parts, m_box_x, cur_my)
         cur_my += int(round(font_specs["date_pt"] * scale))
 
-    # Paragraph gap between Date and KO/Ref
     cur_my += int(round(font_specs["para_spacer_pt"] * scale))
 
-    # Line 3: ko (Lead) + Time (Accent)
+    # Kick-off Time
     clean_ko = str(ko_time).strip()
     ko_parts = [
         ("ko ", font_meta, lead_color),
@@ -449,7 +447,7 @@ def generate_front_cover(
     render_multipart_line(draw, ko_parts, m_box_x, cur_my)
     cur_my += int(round(font_specs["meta_pt"] * scale))
 
-    # Line 4: Referee (Lead) + Official Name (Accent)
+    # Referee
     ref_name = referee.strip() if referee and referee.strip() else "TBC"
     ref_parts = [
         ("Referee ", font_meta, lead_color),
@@ -463,16 +461,3 @@ def generate_front_cover(
     base_img.convert("RGB").save(output_filepath, "PNG")
 
     return output_filepath
-
-
-if __name__ == "__main__":
-    generate_front_cover(
-        home_team="WARRIORS U16",
-        opponent="ELLINGHAM & RINGWOOD RFC",
-        ko_time="10:00",
-        match_date="06 SEP 2026",
-        referee="TBC",
-        opponent_crest_stem="ELLINGHAM & RINGWOOD",
-        competition="HOB",
-        output_filename="test_cover_warriors.png",
-    )
