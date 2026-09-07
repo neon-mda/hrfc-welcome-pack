@@ -16,6 +16,10 @@ from render_eventlogs import generate_eventlogs_page
 from render_coc_partners import generate_chairwelcome_page, generate_coc_page, generate_partners_page
 from render_pdf import compile_fixture_pdf
 
+# --- NEW HELPERS IMPORTED HERE ---
+from github_publisher import publish_pdf_to_github
+from short_io_helper import generate_short_link
+
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "config.xlsx"
 ASSETS_DIR = BASE_DIR / "assets"
@@ -452,7 +456,7 @@ if mode == "Single Fixture":
             if "---" in str(home_team):
                 st.error("Please select a valid Home Team from the list (section dividers cannot be used as a team).")
             else:
-                with st.spinner("Generating graphics & PDF..."):
+                with st.spinner("Generating graphics, compiling PDF, and creating short link..."):
                     cover_path = generate_front_cover(
                         home_team=home_team,
                         opponent=opponent,
@@ -544,11 +548,34 @@ if mode == "Single Fixture":
 
                     ordered_pages.extend([eventlogs_path, coc_path, partners_path])
 
+                    pdf_filename = f"fixture_{home_team}_vs_{opponent}.pdf".replace(" ", "_")
                     pdf_path = compile_fixture_pdf(
                         image_paths=ordered_pages,
-                        output_filename=f"fixture_{home_team}_vs_{opponent}.pdf".replace(" ", "_")
+                        output_filename=pdf_filename
                     )
                     st.session_state["fixture_pdf"] = pdf_path
+
+                    # --- AUTOMATED PUBLISHING & SHORT LINK GENERATION ---
+                    try:
+                        # 1. Publish PDF to GitHub and obtain the permanent raw URL
+                        public_raw_url = publish_pdf_to_github(pdf_path, pdf_filename)
+                        st.session_state["raw_github_url"] = public_raw_url
+
+                        # 2. Generate the branded short link via Short.io
+                        slug = f"{home_team}-vs-{opponent}".lower().replace(" ", "-")
+                        short_url = generate_short_link(public_raw_url, custom_path=slug)
+                        st.session_state["branded_short_url"] = short_url
+                    except Exception as pub_error:
+                        st.session_state["publish_error"] = str(pub_error)
+
+        # Display success outputs if available in session state
+        if "branded_short_url" in st.session_state:
+            st.success("Matchday asset successfully published and shortened!")
+            st.markdown(f"### Branded Short Link: [{st.session_state['branded_short_url']}]({st.session_state['branded_short_url']})")
+            st.markdown("---")
+        elif "publish_error" in st.session_state:
+            st.warning(f"Could not automatically publish short link: {st.session_state['publish_error']}")
+            st.markdown("---")
 
         if "fixture_pdf" in st.session_state and Path(st.session_state["fixture_pdf"]).exists():
             with open(st.session_state["fixture_pdf"], "rb") as f:
