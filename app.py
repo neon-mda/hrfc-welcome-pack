@@ -13,7 +13,8 @@ from render_front_cover import generate_front_cover
 from render_locnotes import generate_locnotes_page
 from render_pitch_change import generate_pitch_change_map
 from render_eventlogs import generate_eventlogs_page
-from render_coc_partners import generate_coc_page, generate_partners_page
+from render_coc_partners import generate_chairwelcome_page, generate_coc_page, generate_partners_page
+from render_pdf import compile_fixture_pdf
 
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "config.xlsx"
@@ -127,22 +128,35 @@ def load_base_metadata(mtime: float):
     opponents = sorted(list(set(opponents)))
 
     comps_df = pd.DataFrame()
-    ordered_teams = []
+    raw_teams = []
     try:
         comps_df = pd.read_excel(CONFIG_PATH, sheet_name="comps")
         if "team_key" in comps_df.columns:
-            ordered_teams = comps_df["team_key"].dropna().astype(str).str.strip().unique().tolist()
+            raw_teams = comps_df["team_key"].dropna().astype(str).str.strip().unique().tolist()
     except Exception as e:
         st.warning(f"Could not read comps sheet: {e}")
 
-    if not ordered_teams:
+    if not raw_teams:
         try:
             teams_df = pd.read_excel(CONFIG_PATH, sheet_name="teams")
             team_col = next((c for c in teams_df.columns if 'team' in str(c).lower() or 'key' in str(c).lower()), None)
             if team_col:
-                ordered_teams = teams_df[team_col].dropna().astype(str).str.strip().unique().tolist()
+                raw_teams = teams_df[team_col].dropna().astype(str).str.strip().unique().tolist()
         except Exception:
             pass
+
+    ordered_teams = [
+        "---JUNIOR BOYS--------------------------------",
+        "U13", "U14", "HURRICANES", "COLTS",
+        "---JUNIOR GIRLS-------------------------------",
+        "WARRIORS U12", "WARRIORS U14", "WARRIORS U16",
+        "---MINIS--------------------------------------",
+        "U12", "U11", "U10", "U9", "U8", "U7", "U6"
+    ]
+
+    for t in raw_teams:
+        if t not in ordered_teams:
+            ordered_teams.append(t)
 
     return pitch_keys, opponents, opponents_df, comps_df, ordered_teams
 
@@ -400,9 +414,9 @@ if mode == "Single Fixture":
 
             col_in, col_out = st.columns(2)
             with col_in:
-                st.metric(label="Calculated IN Time (-75m)", value=in_time)
+                st.metric(label="IN", value=in_time)
             with col_out:
-                st.metric(label="Calculated OUT Time (KO + Match + 40m)", value=out_time)
+                st.metric(label="OUT", value=out_time)
 
         opp_alias = None
         opp_crest = None
@@ -435,87 +449,119 @@ if mode == "Single Fixture":
         st.subheader("Asset Preview")
 
         if generate_btn:
-            with st.spinner("Generating graphics..."):
-                cover_path = generate_front_cover(
-                    home_team=home_team,
-                    opponent=opponent,
-                    ko_time=ko_time,
-                    match_date=match_date_str,
-                    referee=referee,
-                    opponent_crest_stem=opp_crest,
-                    competition=comp_code,
-                    output_filename="preview_front_cover.png",
-                )
-
-                pitch_path = generate_pitch_map(
-                    config_excel_path=CONFIG_PATH,
-                    pitch_key=selected_pitch,
-                    home_team=home_team,
-                    opponent=opponent,
-                    ko_time=ko_time,
-                    opponent_alias=opp_alias,
-                    opponent_crest_stem=opp_crest,
-                    match_date=match_date_str,
-                    is_provisional=is_provisional,
-                    competition=comp_code,
-                    output_filename="preview_pitch_map.png",
-                )
-
-                locnotes_path = generate_locnotes_page(
-                    home_team=home_team,
-                    opponent=opponent,
-                    opponent_crest_stem=opp_crest,
-                    competition=comp_code,
-                    custom_notes=matchday_notes,
-                    output_filename="preview_locnotes.png",
-                )
-
-                eventlogs_path = generate_eventlogs_page(
-                    config_excel_path=CONFIG_PATH,
-                    home_team=home_team,
-                    ko_time=ko_time,
-                    match_length_mins=match_length,
-                    output_filename="preview_eventlogs.png",
-                )
-
-                coc_path = generate_coc_page(
-                    home_team=home_team,
-                    output_filename="preview_coc.png",
-                )
-
-                partners_path = generate_partners_page(
-                    home_team=home_team,
-                    output_filename="preview_partners.png",
-                )
-
-                st.session_state["cover_img"] = cover_path
-                st.session_state["pitch_img"] = pitch_path
-                st.session_state["locnotes_img"] = locnotes_path
-                st.session_state["eventlogs_img"] = eventlogs_path
-                st.session_state["coc_img"] = coc_path
-                st.session_state["partners_img"] = partners_path
-
-                if show_changing_rooms:
-                    pitch_change_path = generate_pitch_change_map(
-                        config_excel_path=CONFIG_PATH,
+            if "---" in str(home_team):
+                st.error("Please select a valid Home Team from the list (section dividers cannot be used as a team).")
+            else:
+                with st.spinner("Generating graphics & PDF..."):
+                    cover_path = generate_front_cover(
                         home_team=home_team,
                         opponent=opponent,
-                        home_room_num=home_room_num,
-                        away_room_num=away_room_num,
-                        in_time=in_time,
-                        out_time=out_time,
-                        category_title=f"{home_team} CHANGING ROOMS".upper(),
-                        home_crest_stem=None,
-                        away_crest_stem=opp_crest,
-                        pitch_map_path=pitch_path,
-                        output_filename="preview_pitch_change.png",
+                        ko_time=ko_time,
+                        match_date=match_date_str,
+                        referee=referee,
+                        opponent_crest_stem=opp_crest,
+                        competition=comp_code,
+                        output_filename="preview_front_cover.png",
                     )
-                    st.session_state["pitch_change_img"] = pitch_change_path
-                else:
-                    if "pitch_change_img" in st.session_state:
-                        del st.session_state["pitch_change_img"]
 
-        tabs_list = ["Front Cover", "Pitch Map", "Location & Parking"]
+                    chairwelcome_path = generate_chairwelcome_page(
+                        home_team=home_team,
+                        output_filename="preview_chairwelcome.png",
+                    )
+
+                    pitch_path = generate_pitch_map(
+                        config_excel_path=CONFIG_PATH,
+                        pitch_key=selected_pitch,
+                        home_team=home_team,
+                        opponent=opponent,
+                        ko_time=ko_time,
+                        opponent_alias=opp_alias,
+                        opponent_crest_stem=opp_crest,
+                        match_date=match_date_str,
+                        is_provisional=is_provisional,
+                        competition=comp_code,
+                        output_filename="preview_pitch_map.png",
+                    )
+
+                    locnotes_path = generate_locnotes_page(
+                        home_team=home_team,
+                        opponent=opponent,
+                        opponent_crest_stem=opp_crest,
+                        competition=comp_code,
+                        custom_notes=matchday_notes,
+                        output_filename="preview_locnotes.png",
+                    )
+
+                    eventlogs_path = generate_eventlogs_page(
+                        config_excel_path=CONFIG_PATH,
+                        home_team=home_team,
+                        ko_time=ko_time,
+                        match_length_mins=match_length,
+                        output_filename="preview_eventlogs.png",
+                    )
+
+                    coc_path = generate_coc_page(
+                        home_team=home_team,
+                        output_filename="preview_coc.png",
+                    )
+
+                    partners_path = generate_partners_page(
+                        home_team=home_team,
+                        output_filename="preview_partners.png",
+                    )
+
+                    st.session_state["cover_img"] = cover_path
+                    st.session_state["chairwelcome_img"] = chairwelcome_path
+                    st.session_state["pitch_img"] = pitch_path
+                    st.session_state["locnotes_img"] = locnotes_path
+                    st.session_state["eventlogs_img"] = eventlogs_path
+                    st.session_state["coc_img"] = coc_path
+                    st.session_state["partners_img"] = partners_path
+
+                    ordered_pages = [cover_path, chairwelcome_path, locnotes_path]
+
+                    if show_changing_rooms:
+                        pitch_change_path = generate_pitch_change_map(
+                            config_excel_path=CONFIG_PATH,
+                            home_team=home_team,
+                            opponent=opponent,
+                            home_room_num=home_room_num,
+                            away_room_num=away_room_num,
+                            in_time=in_time,
+                            out_time=out_time,
+                            category_title=f"{home_team} CHANGING ROOMS".upper(),
+                            home_crest_stem="WARRIORS_CRESTDARK" if "WARRIOR" in str(home_team).upper() else None,
+                            away_crest_stem=opp_crest,
+                            pitch_map_path=pitch_path,
+                            output_filename="preview_pitch_change.png",
+                        )
+                        st.session_state["pitch_change_img"] = pitch_change_path
+                        ordered_pages.append(pitch_change_path)
+                    else:
+                        if "pitch_change_img" in st.session_state:
+                            del st.session_state["pitch_change_img"]
+                        ordered_pages.append(pitch_path)
+
+                    ordered_pages.extend([eventlogs_path, coc_path, partners_path])
+
+                    pdf_path = compile_fixture_pdf(
+                        image_paths=ordered_pages,
+                        output_filename=f"fixture_{home_team}_vs_{opponent}.pdf".replace(" ", "_")
+                    )
+                    st.session_state["fixture_pdf"] = pdf_path
+
+        if "fixture_pdf" in st.session_state and Path(st.session_state["fixture_pdf"]).exists():
+            with open(st.session_state["fixture_pdf"], "rb") as f:
+                st.download_button(
+                    label="📥 Download Complete Matchday PDF",
+                    data=f,
+                    file_name=Path(st.session_state["fixture_pdf"]).name,
+                    mime="application/pdf",
+                    use_container_width=True,
+                )
+            st.markdown("---")
+
+        tabs_list = ["Front Cover", "Chair's Welcome", "Pitch Map", "Location & Parking"]
         if show_changing_rooms:
             tabs_list.append("Pitch Change")
         tabs_list.extend(["Event Logs", "Code of Conduct", "Partners"])
@@ -537,6 +583,20 @@ if mode == "Single Fixture":
                 st.info("Click 'Generate Assets' to preview.")
 
         with tabs[1]:
+            if "chairwelcome_img" in st.session_state and Path(st.session_state["chairwelcome_img"]).exists():
+                st.image(str(st.session_state["chairwelcome_img"]), use_container_width=True)
+                with open(st.session_state["chairwelcome_img"], "rb") as f:
+                    st.download_button(
+                        label="Download Chair's Welcome (PNG)",
+                        data=f,
+                        file_name=f"chairwelcome_{home_team}.png".replace(" ", "_"),
+                        mime="image/png",
+                        use_container_width=True,
+                    )
+            else:
+                st.info("Click 'Generate Assets' to preview.")
+
+        with tabs[2]:
             if "pitch_img" in st.session_state and Path(st.session_state["pitch_img"]).exists():
                 st.image(str(st.session_state["pitch_img"]), use_container_width=True)
                 with open(st.session_state["pitch_img"], "rb") as f:
@@ -550,7 +610,7 @@ if mode == "Single Fixture":
             else:
                 st.info("Click 'Generate Assets' to preview.")
 
-        with tabs[2]:
+        with tabs[3]:
             if "locnotes_img" in st.session_state and Path(st.session_state["locnotes_img"]).exists():
                 st.image(str(st.session_state["locnotes_img"]), use_container_width=True)
                 with open(st.session_state["locnotes_img"], "rb") as f:
@@ -564,7 +624,7 @@ if mode == "Single Fixture":
             else:
                 st.info("Click 'Generate Assets' to preview.")
 
-        tab_idx = 3
+        tab_idx = 4
         if show_changing_rooms and len(tabs) > tab_idx:
             with tabs[tab_idx]:
                 if "pitch_change_img" in st.session_state and Path(st.session_state["pitch_change_img"]).exists():
@@ -716,6 +776,10 @@ else:
                         )
                         zip_file.write(c_path, arcname=f"front_covers/{c_file}")
 
+                        cw_file = f"chairwelcome_{clean_team}_{idx}.png"
+                        cw_path = generate_chairwelcome_page(home_team=team, output_filename=cw_file)
+                        zip_file.write(cw_path, arcname=f"chair_welcome/{cw_file}")
+
                         p_file = f"pitch_{clean_team}_{pkey}_{idx}.png"
                         p_path = generate_pitch_map(
                             config_excel_path=CONFIG_PATH,
@@ -743,23 +807,23 @@ else:
                                 in_time=calculate_in_time(ko),
                                 out_time=calculate_out_time(ko, match_len),
                                 category_title=f"{team} CHANGING ROOMS".upper(),
-                                home_crest_stem=None,
+                                home_crest_stem="WARRIORS_CRESTDARK" if "WARRIOR" in team.upper() else None,
                                 away_crest_stem=c_stem,
                                 pitch_map_path=p_path,
                                 output_filename=pc_file,
                             )
                             zip_file.write(pc_path, arcname=f"pitch_changes/{pc_file}")
 
-                        ln_file = f"locnotes_{clean_team}_v_{clean_opp}_{idx}.png"
+                        v_file = f"locnotes_{clean_team}_v_{clean_opp}_{idx}.png"
                         ln_path = generate_locnotes_page(
                             home_team=team,
                             opponent=opp,
                             opponent_crest_stem=c_stem,
                             competition=comp,
                             custom_notes=notes,
-                            output_filename=ln_file,
+                            output_filename=v_file,
                         )
-                        zip_file.write(ln_path, arcname=f"locnotes_pages/{ln_file}")
+                        zip_file.write(ln_path, arcname=f"locnotes_pages/{v_file}")
 
                         el_file = f"eventlogs_{clean_team}_{idx}.png"
                         match_len = get_default_match_length_for_team(team, comps_df)

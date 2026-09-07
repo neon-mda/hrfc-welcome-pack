@@ -51,19 +51,26 @@ def resolve_font_path(style: str = "Bold") -> Path:
 @lru_cache(maxsize=64)
 def load_club_crest(home_team: str, max_w_px: int, max_h_px: int) -> Image.Image | None:
     clean = str(home_team).strip().upper()
-    prefix = "HUNGERFORD"
+    
+    candidates = []
     if "WARRIOR" in clean:
-        prefix = "WARRIORS"
+        candidates.extend([
+            BRANDING_DIR / "WARRIORS_CREST_DARK.png",
+            BRANDING_DIR / "WARRIORS_CREST.png",
+            BRANDING_DIR / "WARRIORS.png",
+        ])
     elif "HURRICANE" in clean:
-        prefix = "HURRICANES"
-
-    candidates = [
-        BRANDING_DIR / f"{prefix}_CREST.png",
-        BRANDING_DIR / f"{prefix}.png",
+        candidates.extend([
+            BRANDING_DIR / "HURRICANES_CREST.png",
+            BRANDING_DIR / "HURRICANES.png",
+        ])
+    
+    candidates.extend([
         BRANDING_DIR / "HUNGERFORD_CREST.png",
         BRANDING_DIR / "HRFC_CREST.png",
         BRANDING_DIR / "HRFC.png"
-    ]
+    ])
+    
     for path in candidates:
         if path.exists():
             img = Image.open(path).convert("RGBA")
@@ -204,7 +211,6 @@ def generate_pitch_change_map(
     time_label_font = get_cached_font(str(font_bold_path.resolve()), int(round(28.0 * scale)))
     time_val_font = get_cached_font(str(font_reg_path.resolve()), int(round(32.0 * scale)))
 
-    # Nudged both text boxes over to the right by 15px
     nudge_15px = 15.0 * scale
     left_col_right_x = (855.0 * scale) + nudge_15px
     right_col_left_x = (871.6 * scale) + nudge_15px
@@ -266,7 +272,6 @@ def generate_pitch_change_map(
 
     base_img.alpha_composite(txt_layer)
 
-    # 1. Render Home Club Crest (HUNGERFORD_CREST) on Home Room Box
     home_box = CHANGING_ROOM_BOXES.get(home_room_num)
     if home_box:
         crest_w = int(round(home_box["w"] * scale))
@@ -279,7 +284,6 @@ def generate_pitch_change_map(
             dest_y = int(round(cy - (club_crest.height / 2.0)))
             base_img.alpha_composite(club_crest, dest=(dest_x, dest_y))
 
-    # 2. Render Away Opponent Crest on Away Room Box
     away_box = CHANGING_ROOM_BOXES.get(away_room_num)
     if away_box:
         crest_w = int(round(away_box["w"] * scale))

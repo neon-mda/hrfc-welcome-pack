@@ -1,6 +1,5 @@
 from pathlib import Path
 from functools import lru_cache
-import pandas as pd
 from PIL import Image
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -45,6 +44,9 @@ def generate_static_page(
     output_filepath = OUTPUT_DIR / output_filename
     img.convert("RGB").save(output_filepath, "PNG")
     return output_filepath
+
+def generate_chairwelcome_page(home_team: str, output_filename: str = "output_chairwelcome.png") -> Path:
+    return generate_static_page(home_team, "CHAIRWELCOME", output_filename)
 
 def generate_coc_page(home_team: str, output_filename: str = "output_coc.png") -> Path:
     return generate_static_page(home_team, "COC", output_filename)
