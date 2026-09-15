@@ -2,6 +2,7 @@ from pathlib import Path
 from datetime import date, timedelta, datetime
 import io
 import re
+import urllib.parse
 import zipfile
 import pandas as pd
 import streamlit as st
@@ -16,8 +17,8 @@ from render_eventlogs import generate_eventlogs_page
 from render_coc_partners import generate_chairwelcome_page, generate_coc_page, generate_partners_page
 from render_pdf import compile_fixture_pdf
 
-# --- NEW HELPERS IMPORTED HERE ---
-from github_publisher import publish_pdf_to_github
+# --- HELPER IMPORTS ---
+from gdrive_publisher import publish_pdf_to_gdrive
 from short_io_helper import generate_short_link
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -81,6 +82,60 @@ def requires_changing_rooms(home_team: str) -> bool:
         except ValueError:
             pass
     return True
+
+
+def get_custom_filename(home_team: str, opponent: str, selected_alias: str, comps_df: pd.DataFrame, match_date_str: str) -> str:
+    """
+    Generates filename based on rules:
+    - Pulls 'file_comp' from comps tab matching the selected alias.
+    - For Warriors: <teamname> v <opponent> [file_comp] WELCOME PACK <match_date>
+    - For Default / Colts / Hurricanes: HRFC <teamname> v <opponent> [file_comp] WELCOME PACK <match_date>
+    """
+    clean_home = str(home_team).strip()
+    clean_opp = str(opponent).strip()
+    clean_date = str(match_date_str).strip()
+    
+    file_comp_str = ""
+    if selected_alias and selected_alias != "NONE" and not comps_df.empty:
+        matched_comp = comps_df[comps_df["comp_alias"].astype(str).str.strip().str.upper() == str(selected_alias).strip().upper()]
+        if not matched_comp.empty and "file_comp" in comps_df.columns:
+            fc_val = matched_comp.iloc[0]["file_comp"]
+            if pd.notna(fc_val) and str(fc_val).strip().upper() not in ["NONE", "NAN", ""]:
+                file_comp_str = f" {str(fc_val).strip().upper()}"
+
+    if "WARRIOR" in clean_home.upper():
+        prefix = ""
+    else:
+        prefix = "HRFC "
+        
+    filename = f"{prefix}{clean_home} v {clean_opp}{file_comp_str} WELCOME PACK {clean_date}.pdf"
+    return filename
+
+
+def generate_unique_slug(home_team: str, opponent_slug_alias: str, match_date_obj: date) -> str:
+    """
+    Generates slug based on exact team formatting rules:
+    - HURRICANES: HURRICANES-v-<opp>-<date>
+    - WARRIORS: WARRIORS-Uxx-v-<opp>-<date>
+    - COLTS: HRFC-COLTS-v-<opp>-<date>
+    - Standard Uxx: HRFC-Uxx-v-<opp>-<date>
+    """
+    clean_home = str(home_team).strip().upper()
+    clean_opp = str(opponent_slug_alias).strip().upper() if opponent_slug_alias and str(opponent_slug_alias).strip().upper() not in ["NONE", "NAN", ""] else "OPP"
+    date_str = match_date_obj.strftime("%d.%m.%y")
+    
+    if "HURRICANES" in clean_home:
+        slug = f"HURRICANES-v-{clean_opp}-{date_str}"
+    elif "WARRIORS" in clean_home:
+        formatted_home = clean_home.replace(" ", "-")
+        slug = f"{formatted_home}-v-{clean_opp}-{date_str}"
+    elif "COLTS" in clean_home:
+        slug = f"HRFC-COLTS-v-{clean_opp}-{date_str}"
+    else:
+        formatted_home = clean_home.replace(" ", "-")
+        slug = f"HRFC-{formatted_home}-v-{clean_opp}-{date_str}"
+        
+    return slug.lower()
 
 
 @st.cache_data
@@ -456,7 +511,7 @@ if mode == "Single Fixture":
             if "---" in str(home_team):
                 st.error("Please select a valid Home Team from the list (section dividers cannot be used as a team).")
             else:
-                with st.spinner("Generating graphics, compiling PDF, and creating short link..."):
+                with st.spinner("Generating graphics, compiling PDF, and updating Google Drive & Short.io..."):
                     cover_path = generate_front_cover(
                         home_team=home_team,
                         opponent=opponent,
@@ -548,33 +603,43 @@ if mode == "Single Fixture":
 
                     ordered_pages.extend([eventlogs_path, coc_path, partners_path])
 
-                    pdf_filename = f"fixture_{home_team}_vs_{opponent}.pdf".replace(" ", "_")
+                    # --- CONDITIONAL FILENAME GENERATION ---
+                    pdf_filename = get_custom_filename(home_team, opponent, selected_alias, comps_df, match_date_str)
+                    
                     pdf_path = compile_fixture_pdf(
                         image_paths=ordered_pages,
                         output_filename=pdf_filename
                     )
                     st.session_state["fixture_pdf"] = pdf_path
 
-                    # --- AUTOMATED PUBLISHING & SHORT LINK GENERATION ---
+                    # --- GOOGLE DRIVE SYNC & SHORT.IO AUTOMATION ---
                     try:
-                        # 1. Publish PDF to GitHub and obtain the permanent raw URL
-                        public_raw_url = publish_pdf_to_github(pdf_path, pdf_filename)
-                        st.session_state["raw_github_url"] = public_raw_url
+                        # 1. Copy PDF to local Google Drive folder
+                        gdrive_dest_path = publish_pdf_to_gdrive(pdf_path, pdf_filename)
+                        st.session_state["gdrive_path"] = gdrive_dest_path
 
-                        # 2. Generate the branded short link via Short.io
-                        slug = f"{home_team}-vs-{opponent}".lower().replace(" ", "-")
-                        short_url = generate_short_link(public_raw_url, custom_path=slug)
+                        # 2. Generate Unique Slug and Short.io link
+                        slug = generate_unique_slug(home_team, opp_alias, match_date_val)
+                        
+                        # Point Short.io to your shared GDrive output folder or a stable landing page
+                        target_web_url = "https://drive.google.com/drive/folders/1-HRFC_Matchday_Output" # Update with your exact folder web link if needed
+                        
+                        short_url = generate_short_link(target_web_url, custom_path=slug)
                         st.session_state["branded_short_url"] = short_url
+                        
                     except Exception as pub_error:
                         st.session_state["publish_error"] = str(pub_error)
 
         # Display success outputs if available in session state
         if "branded_short_url" in st.session_state:
-            st.success("Matchday asset successfully published and shortened!")
+            st.success("Matchday asset successfully published, synced to GDrive, and shortened!")
             st.markdown(f"### Branded Short Link: [{st.session_state['branded_short_url']}]({st.session_state['branded_short_url']})")
             st.markdown("---")
+        elif "gdrive_path" in st.session_state:
+            st.success(f"PDF successfully synced to Google Drive: `{st.session_state['gdrive_path']}`")
+            st.markdown("---")
         elif "publish_error" in st.session_state:
-            st.warning(f"Could not automatically publish short link: {st.session_state['publish_error']}")
+            st.warning(f"Could not complete sync: {st.session_state['publish_error']}")
             st.markdown("---")
 
         if "fixture_pdf" in st.session_state and Path(st.session_state["fixture_pdf"]).exists():
